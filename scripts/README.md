@@ -6,6 +6,13 @@ Install common guest-side dependencies first:
 scripts/lima-setup.sh
 ```
 
+Free space in the guest:
+
+```sh
+scripts/lima-clean.sh
+scripts/lima-clean.sh --dry-run
+```
+
 Run the repeatable comparison suite:
 
 ```sh
