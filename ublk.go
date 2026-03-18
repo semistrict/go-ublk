@@ -253,7 +253,7 @@ func NewDevice(opts DeviceOptions) (*Device, error) {
 
 	ring, err := newIOURing(4, true) // SQE128 for control commands
 	if err != nil {
-		ctrlFile.Close()
+		_ = ctrlFile.Close()
 		return nil, fmt.Errorf("create control io_uring: %w", err)
 	}
 
@@ -274,8 +274,8 @@ func NewDevice(opts DeviceOptions) (*Device, error) {
 	}
 
 	if err := dev.ctrlAddDev(&info); err != nil {
-		ring.Close()
-		ctrlFile.Close()
+		_ = ring.Close()
+		_ = ctrlFile.Close()
 		return nil, fmt.Errorf("add device: %w", err)
 	}
 
@@ -289,12 +289,12 @@ func NewDevice(opts DeviceOptions) (*Device, error) {
 		if err == nil {
 			break
 		}
-		syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil) // 10ms
+		_ = syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil) // 10ms
 	}
 	if dev.charFile == nil {
-		dev.ctrlDelDev()
-		ring.Close()
-		ctrlFile.Close()
+		_ = dev.ctrlDelDev()
+		_ = ring.Close()
+		_ = ctrlFile.Close()
 		return nil, fmt.Errorf("open %s: %w", charPath, err)
 	}
 
@@ -368,7 +368,7 @@ func (d *Device) serve(nQueues int, queueFn func(uint16, chan<- error) error) er
 	// Wait for all queues to be ready (FETCHes submitted).
 	for _, ch := range readyChs {
 		if err := <-ch; err != nil {
-			d.Stop()
+			_ = d.Stop()
 			d.serveWg.Wait()
 			return fmt.Errorf("queue setup: %w", err)
 		}
@@ -376,7 +376,7 @@ func (d *Device) serve(nQueues int, queueFn func(uint16, chan<- error) error) er
 
 	// All queues have submitted FETCHes. Now start the device.
 	if err := d.ctrlStartDev(); err != nil {
-		d.Stop()
+		_ = d.Stop()
 		d.serveWg.Wait()
 		return fmt.Errorf("start device: %w", err)
 	}
@@ -444,8 +444,10 @@ func (d *Device) Delete() error {
 }
 
 func (d *Device) delete() error {
+	var err error
+
 	// Send STOP_DEV to trigger ENODEV on pending IO commands.
-	d.Stop()
+	err = errors.Join(err, d.Stop())
 
 	// Let STOP_DEV abort pending IO so queue goroutines can exit cleanly.
 	// Only interrupt the rings if shutdown gets stuck.
@@ -462,20 +464,20 @@ func (d *Device) delete() error {
 
 	// Close the char device before deleting (kernel requires no open refs).
 	if d.charFile != nil {
-		d.charFile.Close()
+		err = errors.Join(err, d.charFile.Close())
 		d.charFile = nil
 	}
 
 	// Drain STOP_DEV CQE, then delete.
-	d.ctrlStopDevWait()
-	d.ctrlDelDev()
+	err = errors.Join(err, d.ctrlStopDevWait())
+	err = errors.Join(err, d.ctrlDelDev())
 	if d.ctrlRing != nil {
-		d.ctrlRing.Close()
+		err = errors.Join(err, d.ctrlRing.Close())
 	}
 	if d.ctrlFile != nil {
-		d.ctrlFile.Close()
+		err = errors.Join(err, d.ctrlFile.Close())
 	}
-	return nil
+	return err
 }
 
 func (d *Device) registerIORing(ring *ioURing) {
@@ -499,7 +501,7 @@ func (d *Device) serveQueue(qid uint16, h Handler, ready chan<- error) error {
 		return err
 	}
 	d.registerIORing(ring)
-	defer ring.Close()
+	defer func() { _ = ring.Close() }()
 
 	// mmap the command buffer for this queue
 	cmdBufSize := ublkMaxCmdBufSize(d.info.QueueDepth)
@@ -516,7 +518,7 @@ func (d *Device) serveQueue(qid uint16, h Handler, ready chan<- error) error {
 		ready <- fmt.Errorf("mmap cmd buf: %w", err)
 		return err
 	}
-	defer syscall.Munmap(cmdBuf)
+	defer func() { _ = syscall.Munmap(cmdBuf) }()
 
 	// Issue initial FETCH_REQ for all slots
 	for tag := uint16(0); tag < d.info.QueueDepth; tag++ {
@@ -607,7 +609,7 @@ func (d *Device) serveQueue(qid uint16, h Handler, ready chan<- error) error {
 			res := cqe.Res
 			var iod ioDesc
 			seen := false
-			if res >= 0 && !(res == int32(-int32(syscall.EBUSY)) && pendingCommit[tag]) {
+			if res >= 0 {
 				if verifyDescEnabled {
 					first, second := snapshotIODescBytes(cmdBuf, tag), snapshotIODescBytes(cmdBuf, tag)
 					if first != second {

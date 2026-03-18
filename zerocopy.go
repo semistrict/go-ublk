@@ -142,7 +142,7 @@ func (d *Device) serveQueueZeroCopy(qid uint16, h ZeroCopyHandler, ready chan<- 
 		return err
 	}
 	d.registerIORing(ring)
-	defer ring.Close()
+	defer func() { _ = ring.Close() }()
 
 	if err := ring.RegisterSparseBuffers(uint32(depth)); err != nil {
 		ready <- fmt.Errorf("register sparse buffers: %w", err)
@@ -163,7 +163,7 @@ func (d *Device) serveQueueZeroCopy(qid uint16, h ZeroCopyHandler, ready chan<- 
 		ready <- fmt.Errorf("mmap cmd buf: %w", err)
 		return err
 	}
-	defer syscall.Munmap(cmdBuf)
+	defer func() { _ = syscall.Munmap(cmdBuf) }()
 
 	for tag := uint16(0); tag < d.info.QueueDepth; tag++ {
 		if err := d.submitFetchAutoBuf(ring, qid, tag); err != nil {
@@ -229,7 +229,7 @@ func (d *Device) serveQueueZeroCopy(qid uint16, h ZeroCopyHandler, ready chan<- 
 			tag := uint16(cqe.UserData)
 			res := cqe.Res
 			var iod ioDesc
-			if res >= 0 && !(res == int32(-int32(syscall.EBUSY)) && pendingCommit[tag]) {
+			if res >= 0 {
 				iod = loadIODesc(cmdBuf, tag)
 			}
 			ring.SeenCQE(cqe)

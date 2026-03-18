@@ -45,7 +45,7 @@ func main() {
 	if err != nil {
 		fatalf("NewDevice: %v", err)
 	}
-	defer dev.Delete()
+	defer func() { _ = dev.Delete() }()
 
 	if err := dev.SetParams(&ublk.Params{
 		Types: ublk.ParamTypeBasic,
@@ -295,7 +295,7 @@ func writeNamedProfile(path string, write func(*os.File) error) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return write(f)
 }
 

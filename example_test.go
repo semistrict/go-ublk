@@ -19,7 +19,7 @@ func ExampleNewDevice_null() {
 		fmt.Println("error:", err)
 		return
 	}
-	defer dev.Delete()
+	defer func() { _ = dev.Delete() }()
 
 	err = dev.SetParams(&ublk.Params{
 		Types: ublk.ParamTypeBasic,
@@ -38,7 +38,7 @@ func ExampleNewDevice_null() {
 	}
 
 	go func() {
-		dev.Serve(ublk.HandlerFunc(func(req *ublk.Request) error {
+		_ = dev.Serve(ublk.HandlerFunc(func(req *ublk.Request) error {
 			switch req.Op {
 			case ublk.OpRead:
 				buf := make([]byte, int(req.NrSectors)*512)
@@ -53,7 +53,10 @@ func ExampleNewDevice_null() {
 	}()
 
 	fmt.Printf("null device %d at %s\n", dev.ID(), dev.BlockDevPath())
-	dev.Stop()
+	if err := dev.Stop(); err != nil {
+		fmt.Println("error:", err)
+		return
+	}
 	// Output is non-deterministic (device ID varies), so no Output: comment.
 }
 
@@ -70,7 +73,7 @@ func ExampleNewDevice_ramdisk() {
 		fmt.Println("error:", err)
 		return
 	}
-	defer dev.Delete()
+	defer func() { _ = dev.Delete() }()
 
 	err = dev.SetParams(&ublk.Params{
 		Types: ublk.ParamTypeBasic,
@@ -89,7 +92,7 @@ func ExampleNewDevice_ramdisk() {
 	}
 
 	go func() {
-		dev.Serve(ublk.HandlerFunc(func(req *ublk.Request) error {
+		_ = dev.Serve(ublk.HandlerFunc(func(req *ublk.Request) error {
 			off := int(req.StartSector) * 512
 			size := int(req.NrSectors) * 512
 			switch req.Op {
@@ -113,7 +116,10 @@ func ExampleNewDevice_ramdisk() {
 	}()
 
 	fmt.Printf("ramdisk %d at %s\n", dev.ID(), dev.BlockDevPath())
-	dev.Stop()
+	if err := dev.Stop(); err != nil {
+		fmt.Println("error:", err)
+		return
+	}
 }
 
 // ExampleNewDevice_zeroCopyLoop demonstrates creating a file-backed loop
@@ -125,11 +131,14 @@ func ExampleNewDevice_zeroCopyLoop() {
 		fmt.Println("error:", err)
 		return
 	}
-	defer os.Remove(f.Name())
-	defer f.Close()
+	defer func() { _ = os.Remove(f.Name()) }()
+	defer func() { _ = f.Close() }()
 
 	const sectors = 2048
-	f.Truncate(sectors * 512)
+	if err := f.Truncate(sectors * 512); err != nil {
+		fmt.Println("error:", err)
+		return
+	}
 	backingFd := int32(f.Fd())
 
 	dev, err := ublk.NewDevice(ublk.DeviceOptions{
@@ -141,7 +150,7 @@ func ExampleNewDevice_zeroCopyLoop() {
 		fmt.Println("error:", err)
 		return
 	}
-	defer dev.Delete()
+	defer func() { _ = dev.Delete() }()
 
 	err = dev.SetParams(&ublk.Params{
 		Types: ublk.ParamTypeBasic | ublk.ParamTypeDiscard,
@@ -167,7 +176,7 @@ func ExampleNewDevice_zeroCopyLoop() {
 	}
 
 	go func() {
-		dev.ServeZeroCopy(ublk.ZeroCopyHandlerFunc(func(req *ublk.ZeroCopyRequest) error {
+		_ = dev.ServeZeroCopy(ublk.ZeroCopyHandlerFunc(func(req *ublk.ZeroCopyRequest) error {
 			off := int64(req.StartSector) * 512
 			size := uint32(req.NrSectors) * 512
 			switch req.Op {
@@ -176,8 +185,7 @@ func ExampleNewDevice_zeroCopyLoop() {
 			case ublk.OpWrite:
 				return req.WriteFixed(backingFd, off, size)
 			case ublk.OpFlush:
-				f.Sync()
-				return nil
+				return f.Sync()
 			case ublk.OpDiscard:
 				return punchHole(backingFd, off, int64(size))
 			case ublk.OpWriteZeroes:
@@ -189,7 +197,10 @@ func ExampleNewDevice_zeroCopyLoop() {
 	}()
 
 	fmt.Printf("loop device %d at %s backed by %s\n", dev.ID(), dev.BlockDevPath(), f.Name())
-	dev.Stop()
+	if err := dev.Stop(); err != nil {
+		fmt.Println("error:", err)
+		return
+	}
 }
 
 func punchHole(fd int32, off, length int64) error {

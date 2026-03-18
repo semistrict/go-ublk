@@ -23,7 +23,7 @@ func TestRawAddDev(t *testing.T) {
 	if err != nil {
 		t.Skipf("ublk not available: %v", err)
 	}
-	defer syscall.Close(ctrlFd)
+	defer func() { _ = syscall.Close(ctrlFd) }()
 	t.Logf("ublk-control fd=%d", ctrlFd)
 
 	// 2. Check IORING_SETUP_SQE128 value from kernel headers
@@ -56,7 +56,7 @@ func TestRawAddDev(t *testing.T) {
 	if errno != 0 {
 		t.Fatalf("io_uring_setup: %v", errno)
 	}
-	defer syscall.Close(int(ringFd))
+	defer func() { _ = syscall.Close(int(ringFd)) }()
 	t.Logf("ring fd=%d sq_entries=%d cq_entries=%d features=0x%x", ringFd, p.SqEntries, p.CqEntries, p.Features)
 
 	// 4. mmap rings
@@ -65,7 +65,7 @@ func TestRawAddDev(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mmap sq ring: %v", err)
 	}
-	defer syscall.Munmap(sqRing)
+	defer func() { _ = syscall.Munmap(sqRing) }()
 
 	cqeSize := 16
 	cqLen := int(p.CqOff.Cqes) + int(p.CqEntries)*cqeSize
@@ -73,14 +73,14 @@ func TestRawAddDev(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mmap cq ring: %v", err)
 	}
-	defer syscall.Munmap(cqRing)
+	defer func() { _ = syscall.Munmap(cqRing) }()
 
 	sqesLen := int(p.SqEntries) * 128 // 128 bytes per SQE128
 	sqes, err := syscall.Mmap(int(ringFd), 0x10000000, sqesLen, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED|syscall.MAP_POPULATE)
 	if err != nil {
 		t.Fatalf("mmap sqes: %v", err)
 	}
-	defer syscall.Munmap(sqes)
+	defer func() { _ = syscall.Munmap(sqes) }()
 
 	// 5. Build DevInfo buffer
 	type devInfo struct {
@@ -203,6 +203,9 @@ func TestRawAddDev(t *testing.T) {
 		ret, _, errno = syscall.Syscall6(426, ringFd, 1, 0, 0, 0, 0)
 		t.Logf("retry submit: ret=%d errno=%v", ret, errno)
 		_, _, errno = syscall.Syscall6(426, ringFd, 0, 1, 1, 0, 0)
+		if errno != 0 && errno != syscall.EINTR {
+			t.Fatalf("retry wait failed: %v", errno)
+		}
 
 		cqHead = binary.LittleEndian.Uint32(cqRing[p.CqOff.Head:])
 		cqTail = binary.LittleEndian.Uint32(cqRing[p.CqOff.Tail:])
@@ -235,8 +238,13 @@ func TestRawAddDev(t *testing.T) {
 			binary.LittleEndian.PutUint32(sqRing[p.SqOff.Array+4*(tail&binary.LittleEndian.Uint32(sqRing[p.SqOff.RingMask:])):], 0)
 			binary.LittleEndian.PutUint32(sqRing[p.SqOff.Tail:], tail+1)
 
-			syscall.Syscall6(426, ringFd, 1, 0, 0, 0, 0)
-			syscall.Syscall6(426, ringFd, 0, 1, 1, 0, 0)
+			if _, _, errno = syscall.Syscall6(426, ringFd, 1, 0, 0, 0, 0); errno != 0 {
+				t.Fatalf("flags=0 submit failed: %v", errno)
+			}
+			_, _, errno = syscall.Syscall6(426, ringFd, 0, 1, 1, 0, 0)
+			if errno != 0 && errno != syscall.EINTR {
+				t.Fatalf("flags=0 wait failed: %v", errno)
+			}
 
 			cqHead = binary.LittleEndian.Uint32(cqRing[p.CqOff.Head:])
 			cqTail = binary.LittleEndian.Uint32(cqRing[p.CqOff.Tail:])
@@ -275,6 +283,8 @@ func TestRawAddDev(t *testing.T) {
 	binary.LittleEndian.PutUint32(sqRing[p.SqOff.Array+4*(tail&binary.LittleEndian.Uint32(sqRing[p.SqOff.RingMask:])):], 0)
 	binary.LittleEndian.PutUint32(sqRing[p.SqOff.Tail:], tail+1)
 
-	syscall.Syscall6(426, ringFd, 1, 1, 1, 0, 0)
+	if _, _, errno = syscall.Syscall6(426, ringFd, 1, 1, 1, 0, 0); errno != 0 {
+		t.Fatalf("DEL_DEV submit failed: %v", errno)
+	}
 	t.Log("DEL_DEV submitted")
 }

@@ -65,7 +65,7 @@ func (d *Device) setQueueAffinity(qid uint16) {
 	if len(cpus) == 0 {
 		return
 	}
-	setThreadAffinity(aff.mask)
+	_ = setThreadAffinity(aff.mask)
 }
 
 // setThreadAffinity pins the current OS thread to the given CPU mask.

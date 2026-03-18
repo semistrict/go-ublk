@@ -17,8 +17,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-go@v6.3.0
         with:
           go-version-file: go.mod
       - run: make build
@@ -26,8 +26,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-go@v6.3.0
         with:
           go-version-file: go.mod
       - run: make test
@@ -35,11 +35,12 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-go@v6.3.0
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@v9.2.0
         with:
           install-only: true
+          version: v2.11.3
       - run: make check

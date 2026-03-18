@@ -22,9 +22,10 @@ GitHub Actions only runs the portable checks:
 - `make test`
 - `make check`
 
-The `test` target is intentionally limited to unit tests that do not require
-`ublk` kernel support. Full integration coverage is exercised separately in
-Lima.
+The `Makefile` is host-native and does not shell out to Lima. The `test`
+target is intentionally limited to unit tests that do not require `ublk`
+kernel support. Full Linux integration coverage and benchmarks are exercised
+separately in Lima.
 
 ## Local checks
 

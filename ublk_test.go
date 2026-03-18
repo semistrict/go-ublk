@@ -182,7 +182,7 @@ func setupRamdiskWithConfig(t *testing.T, opts ublk.DeviceOptions, params *ublk.
 	}
 	err = dev.SetParams(params)
 	if err != nil {
-		dev.Delete()
+		_ = dev.Delete()
 		t.Fatalf("SetParams: %v", err)
 	}
 
@@ -196,7 +196,9 @@ func setupRamdiskWithConfig(t *testing.T, opts ublk.DeviceOptions, params *ublk.
 	}()
 
 	t.Cleanup(func() {
-		dev.Delete()
+		if err := dev.Delete(); err != nil {
+			t.Errorf("Delete: %v", err)
+		}
 		if err := <-serveErr; err != nil {
 			t.Errorf("Serve returned error: %v", err)
 		}
@@ -208,7 +210,7 @@ func setupRamdiskWithConfig(t *testing.T, opts ublk.DeviceOptions, params *ublk.
 		if _, err := os.Stat(blkPath); err == nil {
 			return dev
 		}
-		syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil) // 10ms
+		_ = syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil) // 10ms
 	}
 	t.Fatalf("block device %s did not appear", blkPath)
 	return nil
@@ -229,7 +231,11 @@ func openBlkDev(t *testing.T, dev *ublk.Device, flags int) *os.File {
 	if err != nil {
 		t.Fatalf("open %s: %v", dev.BlockDevPath(), err)
 	}
-	t.Cleanup(func() { f.Close() })
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close %s: %v", dev.BlockDevPath(), err)
+		}
+	})
 	return f
 }
 
@@ -383,7 +389,7 @@ func TestConcurrentIO(t *testing.T) {
 				t.Errorf("worker %d: open: %v", idx, err)
 				return
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
 			off := int64(idx) * chunkSize
 			buf := alignedBuf(chunkSize)
@@ -418,7 +424,11 @@ func TestFullDeviceWriteRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	t.Cleanup(func() { f.Close() })
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close %s: %v", dev.BlockDevPath(), err)
+		}
+	})
 
 	// Write the entire device in 4KiB chunks, read it all back
 	chunkSize := 4096
@@ -434,7 +444,9 @@ func TestFullDeviceWriteRead(t *testing.T) {
 		}
 		// Sync periodically to avoid overwhelming the queue
 		if off%(64*4096) == 0 {
-			f.Sync()
+			if err := f.Sync(); err != nil {
+				t.Fatalf("Sync: %v", err)
+			}
 		}
 	}
 
@@ -507,7 +519,7 @@ func TestGetParamsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDevice: %v", err)
 	}
-	defer dev.Delete()
+	defer func() { _ = dev.Delete() }()
 
 	want := &ublk.Params{
 		Types: ublk.ParamTypeBasic | ublk.ParamTypeDiscard,
@@ -636,7 +648,7 @@ func TestDiscardAndWriteZeroesOps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open %s: %v", dev.BlockDevPath(), err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		buf := bytes.Repeat([]byte{fill}, 4096)
 		if _, err := f.WriteAt(buf, off); err != nil {
@@ -649,7 +661,7 @@ func TestDiscardAndWriteZeroesOps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open %s: %v", dev.BlockDevPath(), err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		buf := make([]byte, 4096)
 		if _, err := f.ReadAt(buf, off); err != nil {
@@ -804,7 +816,7 @@ func TestQueueDepthOneConcurrentIO(t *testing.T) {
 				t.Errorf("worker %d: open: %v", id, err)
 				return
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
 			for iter := 0; iter < iterations; iter++ {
 				off := int64((id*iterations + iter) * chunkSize)
@@ -843,7 +855,11 @@ func TestMinimalGeometryBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	t.Cleanup(func() { f.Close() })
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close %s: %v", dev.BlockDevPath(), err)
+		}
+	})
 
 	want := bytes.Repeat([]byte{0x7C}, 512)
 	if _, err := f.WriteAt(want, 0); err != nil {
@@ -876,7 +892,7 @@ func TestGetParamsBeforeStartLeavesBlockDevtUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDevice: %v", err)
 	}
-	defer dev.Delete()
+	defer func() { _ = dev.Delete() }()
 
 	if err := dev.SetParams(basicParams(testSectors)); err != nil {
 		t.Fatalf("SetParams: %v", err)
@@ -946,7 +962,7 @@ func TestMultiQueueMixedWorkload(t *testing.T) {
 				t.Errorf("worker %d: open: %v", id, err)
 				return
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
 			off := int64(id * chunkSize)
 			want := bytes.Repeat([]byte{byte(id + 1)}, chunkSize)
@@ -1026,7 +1042,9 @@ func TestDDWriteRead(t *testing.T) {
 	}
 
 	// Sync to flush page cache before reading back
-	exec.Command("sync").Run()
+	if err := exec.Command("sync").Run(); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
 
 	readOut, err := exec.Command("dd",
 		fmt.Sprintf("if=%s", dev.BlockDevPath()),
@@ -1064,7 +1082,7 @@ func TestMultiQueue(t *testing.T) {
 		},
 	})
 	if err != nil {
-		dev.Delete()
+		_ = dev.Delete()
 		t.Fatalf("SetParams: %v", err)
 	}
 
@@ -1081,7 +1099,9 @@ func TestMultiQueue(t *testing.T) {
 	}()
 
 	t.Cleanup(func() {
-		dev.Delete()
+		if err := dev.Delete(); err != nil {
+			t.Errorf("Delete: %v", err)
+		}
 		if err := <-serveErr; err != nil {
 			t.Errorf("Serve returned error: %v", err)
 		}
@@ -1092,7 +1112,7 @@ func TestMultiQueue(t *testing.T) {
 		if _, err := os.Stat(blkPath); err == nil {
 			break
 		}
-		syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil)
+		_ = syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil)
 	}
 
 	// Read via dd to verify multi-queue works
@@ -1136,7 +1156,7 @@ func TestMkfsExt4(t *testing.T) {
 		},
 	})
 	if err != nil {
-		dev.Delete()
+		_ = dev.Delete()
 		t.Fatalf("SetParams: %v", err)
 	}
 
@@ -1147,7 +1167,9 @@ func TestMkfsExt4(t *testing.T) {
 	}()
 
 	t.Cleanup(func() {
-		dev.Delete()
+		if err := dev.Delete(); err != nil {
+			t.Errorf("Delete: %v", err)
+		}
 		if err := <-serveErr; err != nil {
 			t.Errorf("Serve returned error: %v", err)
 		}
@@ -1158,7 +1180,7 @@ func TestMkfsExt4(t *testing.T) {
 		if _, err := os.Stat(blkPath); err == nil {
 			break
 		}
-		syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil)
+		_ = syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil)
 	}
 
 	// Check if mkfs.ext4 is available
@@ -1191,10 +1213,10 @@ func skipIfNoZeroCopy(t *testing.T) {
 	}
 	// Check that the kernel echoed back the zero-copy flag.
 	if dev.Info().Flags&ublk.FlagSupportZeroCopy == 0 {
-		dev.Delete()
+		_ = dev.Delete()
 		t.Skip("zero-copy flags stripped by kernel")
 	}
-	dev.Delete()
+	_ = dev.Delete()
 }
 
 func setupZeroCopyLoop(t *testing.T, backingFile *os.File) *ublk.Device {
@@ -1223,7 +1245,7 @@ func setupZeroCopyLoop(t *testing.T, backingFile *os.File) *ublk.Device {
 		},
 	})
 	if err != nil {
-		dev.Delete()
+		_ = dev.Delete()
 		t.Fatalf("SetParams: %v", err)
 	}
 
@@ -1251,7 +1273,9 @@ func setupZeroCopyLoop(t *testing.T, backingFile *os.File) *ublk.Device {
 	}()
 
 	t.Cleanup(func() {
-		dev.Delete()
+		if err := dev.Delete(); err != nil {
+			t.Errorf("Delete: %v", err)
+		}
 		if err := <-serveErr; err != nil {
 			t.Errorf("ServeZeroCopy returned error: %v", err)
 		}
@@ -1262,7 +1286,7 @@ func setupZeroCopyLoop(t *testing.T, backingFile *os.File) *ublk.Device {
 		if _, err := os.Stat(blkPath); err == nil {
 			return dev
 		}
-		syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil)
+		_ = syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil)
 	}
 	t.Fatalf("block device %s did not appear", blkPath)
 	return nil
@@ -1276,13 +1300,17 @@ func createBackingFile(t *testing.T) *os.File {
 	}
 	// Extend to device size
 	if err := f.Truncate(testDevBytes); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		_ = f.Close()
+		_ = os.Remove(f.Name())
 		t.Fatalf("truncate: %v", err)
 	}
 	t.Cleanup(func() {
-		f.Close()
-		os.Remove(f.Name())
+		if err := f.Close(); err != nil {
+			t.Errorf("close %s: %v", f.Name(), err)
+		}
+		if err := os.Remove(f.Name()); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove %s: %v", f.Name(), err)
+		}
 	})
 	return f
 }
@@ -1393,7 +1421,7 @@ func TestGetQueueAffinity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDevice: %v", err)
 	}
-	defer dev.Delete()
+	defer func() { _ = dev.Delete() }()
 
 	for q := uint16(0); q < 2; q++ {
 		aff, err := dev.GetQueueAffinity(q)
@@ -1429,7 +1457,7 @@ func waitForPathState(t *testing.T, path string, wantPresent bool) {
 		if !present && !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("stat %s: %v", path, err)
 		}
-		syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil)
+		_ = syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil)
 	}
 	if wantPresent {
 		t.Fatalf("path %s did not appear", path)

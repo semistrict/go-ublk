@@ -45,7 +45,7 @@ func main() {
 	if err != nil {
 		fatalf("NewDevice: %v", err)
 	}
-	defer dev.Delete()
+	defer func() { _ = dev.Delete() }()
 
 	if err := dev.SetParams(&ublk.Params{
 		Types: ublk.ParamTypeBasic,

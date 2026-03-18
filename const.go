@@ -59,7 +59,6 @@ func ioc(dir, typ, nr, size uint32) uint32 {
 }
 
 func ior(typ, nr, size uint32) uint32  { return ioc(iocRead, typ, nr, size) }          // _IOR
-func iow(typ, nr, size uint32) uint32  { return ioc(iocWrite, typ, nr, size) }         // _IOW
 func iowr(typ, nr, size uint32) uint32 { return ioc(iocRead|iocWrite, typ, nr, size) } // _IOWR
 
 // ublkType is the ioctl type character for ublk commands ('u' = 0x75).
@@ -100,6 +99,23 @@ var (
 	ublkUIoNeedGetData       = iowr(ublkType, IoNeedGetData, ioCmdSize)
 	ublkUIoRegisterIOBuf     = iowr(ublkType, IoRegisterIOBuf, ioCmdSize)
 	ublkUIoUnregisterIOBuf   = iowr(ublkType, IoUnregisterIOBuf, ioCmdSize)
+)
+
+// Keep the full mirrored ioctl surface available even before every command is
+// wired up so the numeric definitions stay aligned with the kernel headers.
+var (
+	_ = ublkUCmdGetDevInfo
+	_ = ublkUCmdStartUserRecov
+	_ = ublkUCmdEndUserRecov
+	_ = ublkUCmdGetDevInfo2
+	_ = ublkUCmdGetFeatures
+	_ = ublkUCmdDelDevAsync
+	_ = ublkUCmdUpdateSize
+	_ = ublkUCmdQuiesceDev
+	_ = ublkUCmdTryStopDev
+	_ = ublkUIoNeedGetData
+	_ = ublkUIoRegisterIOBuf
+	_ = ublkUIoUnregisterIOBuf
 )
 
 // IO result codes returned in CQE.Res for IO commands.

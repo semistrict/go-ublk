@@ -1,6 +1,7 @@
 package ublk
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"sync/atomic"
@@ -105,8 +106,6 @@ func sqeSetU16(sqe *ioURingSQE, off int, v uint16) { *(*uint16)(unsafe.Pointer(&
 func sqeSetU32(sqe *ioURingSQE, off int, v uint32) { *(*uint32)(unsafe.Pointer(&sqe[off])) = v }
 func sqeSetI32(sqe *ioURingSQE, off int, v int32)  { *(*int32)(unsafe.Pointer(&sqe[off])) = v }
 func sqeSetU64(sqe *ioURingSQE, off int, v uint64) { *(*uint64)(unsafe.Pointer(&sqe[off])) = v }
-
-func sqeGetU64(sqe *ioURingSQE, off int) uint64 { return *(*uint64)(unsafe.Pointer(&sqe[off])) }
 
 // ioURingCQE mirrors `struct io_uring_cqe` from
 // `include/uapi/linux/io_uring.h`.
@@ -221,7 +220,7 @@ func newIOURing(entries uint32, sqe128 bool) (*ioURing, error) {
 	}
 
 	if err := ring.mmapRings(&params); err != nil {
-		syscall.Close(ring.fd)
+		_ = syscall.Close(ring.fd)
 		return nil, err
 	}
 
@@ -250,7 +249,7 @@ func (r *ioURing) mmapRings(p *ioURingParams) error {
 	cqRingLen := int(p.CqOff.Cqes) + int(p.CqEntries)*int(unsafe.Sizeof(ioURingCQE{}))
 	r.cqRingMem, err = mmapShared(r.fd, ioringOffCQRing, cqRingLen)
 	if err != nil {
-		syscall.Munmap(r.sqRingMem)
+		_ = syscall.Munmap(r.sqRingMem)
 		return fmt.Errorf("mmap cq ring: %w", err)
 	}
 	r.cqHeadOff = uintptr(p.CqOff.Head)
@@ -262,8 +261,8 @@ func (r *ioURing) mmapRings(p *ioURingParams) error {
 	sqesLen := int(p.SqEntries) * int(r.sqeSize)
 	r.sqesMem, err = mmapShared(r.fd, ioringOffSQEs, sqesLen)
 	if err != nil {
-		syscall.Munmap(r.cqRingMem)
-		syscall.Munmap(r.sqRingMem)
+		_ = syscall.Munmap(r.cqRingMem)
+		_ = syscall.Munmap(r.sqRingMem)
 		return fmt.Errorf("mmap sqes: %w", err)
 	}
 
@@ -271,18 +270,27 @@ func (r *ioURing) mmapRings(p *ioURingParams) error {
 }
 
 func (r *ioURing) Close() error {
-	syscall.Close(r.fd)
-	syscall.Munmap(r.sqesMem)
-	syscall.Munmap(r.cqRingMem)
-	syscall.Munmap(r.sqRingMem)
-	return nil
+	var err error
+	if r.fd >= 0 {
+		err = errors.Join(err, syscall.Close(r.fd))
+	}
+	if r.sqesMem != nil {
+		err = errors.Join(err, syscall.Munmap(r.sqesMem))
+	}
+	if r.cqRingMem != nil {
+		err = errors.Join(err, syscall.Munmap(r.cqRingMem))
+	}
+	if r.sqRingMem != nil {
+		err = errors.Join(err, syscall.Munmap(r.sqRingMem))
+	}
+	return err
 }
 
 // Interrupt closes the fd to unblock any goroutine stuck in WaitCQE.
 // The caller must NOT access the ring after this. The serve goroutine
 // should call Close() to unmap memory on its way out.
 func (r *ioURing) Interrupt() {
-	syscall.Close(r.fd)
+	_ = syscall.Close(r.fd)
 	r.fd = -1
 }
 
