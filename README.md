@@ -1,5 +1,7 @@
 # go-ublk
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/semistrict/go-ublk.svg)](https://pkg.go.dev/github.com/semistrict/go-ublk)
+
 `go-ublk` is an experimental Go library and toolset for building Linux
 `ublk` userspace block devices.
 
