@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	affinityBufSize = 128 // 1024 CPUs (128 bytes * 8 bits)
+	affinityBufSize     = 128 // 1024 CPUs (128 bytes * 8 bits)
 	sysSchedSetaffinity = 203 // SYS_SCHED_SETAFFINITY on amd64
 )
 

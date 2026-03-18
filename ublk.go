@@ -656,33 +656,33 @@ func (d *Device) serveQueue(qid uint16, h Handler, ready chan<- error) error {
 						return err
 					}
 					return fmt.Errorf("cqe error for tag %d: %d", tag, res)
-					}
-					pendingCommit[tag] = false
+				}
+				pendingCommit[tag] = false
 
-					req := &reqs[tag]
-					req.Op = IOOp(iod.OpFlags & 0xff)
-					req.Flags = iod.OpFlags >> 8
-					req.StartSector = iod.StartSector
-					req.NrSectors = iod.NrSectors
-					req.Tag = tag
-					req.QueueID = qid
-					req.dev = d
+				req := &reqs[tag]
+				req.Op = IOOp(iod.OpFlags & 0xff)
+				req.Flags = iod.OpFlags >> 8
+				req.StartSector = iod.StartSector
+				req.NrSectors = iod.NrSectors
+				req.Tag = tag
+				req.QueueID = qid
+				req.dev = d
 
-					result := int32(req.NrSectors) * 512
+				result := int32(req.NrSectors) * 512
+				if debugEnabled {
+					ioDebugf("handle q=%d tag=%d op=%d flags=%d start=%d sectors=%d", qid, tag, req.Op, req.Flags, req.StartSector, req.NrSectors)
+				}
+				if err := h.HandleIO(req); err != nil {
 					if debugEnabled {
-						ioDebugf("handle q=%d tag=%d op=%d flags=%d start=%d sectors=%d", qid, tag, req.Op, req.Flags, req.StartSector, req.NrSectors)
+						ioDebugf("handle error q=%d tag=%d err=%v", qid, tag, err)
 					}
-					if err := h.HandleIO(req); err != nil {
-						if debugEnabled {
-							ioDebugf("handle error q=%d tag=%d err=%v", qid, tag, err)
-						}
-						result = -int32(syscall.EIO)
-					}
+					result = -int32(syscall.EIO)
+				}
 
-					if debugEnabled {
-						ioDebugf("commit q=%d tag=%d result=%d", qid, tag, result)
-					}
-					if err := d.submitCommitAndFetch(ring, qid, tag, result); err != nil {
+				if debugEnabled {
+					ioDebugf("commit q=%d tag=%d result=%d", qid, tag, result)
+				}
+				if err := d.submitCommitAndFetch(ring, qid, tag, result); err != nil {
 					if !seen {
 						ring.SeenCQE(cqe)
 					}

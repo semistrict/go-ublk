@@ -125,16 +125,16 @@ func TestRawAddDev(t *testing.T) {
 	sqe := sqes[0:128]
 	clear(sqe)
 
-	sqe[0] = 46 // opcode = IORING_OP_URING_CMD
-	binary.LittleEndian.PutUint32(sqe[4:8], uint32(ctrlFd))                                      // fd
-	binary.LittleEndian.PutUint32(sqe[8:12], cmdOp)                                               // cmd_op (low 32 of off)
-	binary.LittleEndian.PutUint32(sqe[12:16], 0)                                                  // __pad1 (high 32 of off)
-	binary.LittleEndian.PutUint64(sqe[32:40], 0xDEAD)                                             // user_data
+	sqe[0] = 46                                             // opcode = IORING_OP_URING_CMD
+	binary.LittleEndian.PutUint32(sqe[4:8], uint32(ctrlFd)) // fd
+	binary.LittleEndian.PutUint32(sqe[8:12], cmdOp)         // cmd_op (low 32 of off)
+	binary.LittleEndian.PutUint32(sqe[12:16], 0)            // __pad1 (high 32 of off)
+	binary.LittleEndian.PutUint64(sqe[32:40], 0xDEAD)       // user_data
 	// cmd payload at offset 48: ublksrv_ctrl_cmd
-	binary.LittleEndian.PutUint32(sqe[48:52], 0xFFFFFFFF)                                         // dev_id = -1
-	binary.LittleEndian.PutUint16(sqe[52:54], 0xFFFF)                                             // queue_id = -1
-	binary.LittleEndian.PutUint16(sqe[54:56], uint16(unsafe.Sizeof(info)))                        // len
-	binary.LittleEndian.PutUint64(sqe[56:64], uint64(uintptr(unsafe.Pointer(&infoBuf[0]))))       // addr
+	binary.LittleEndian.PutUint32(sqe[48:52], 0xFFFFFFFF)                                   // dev_id = -1
+	binary.LittleEndian.PutUint16(sqe[52:54], 0xFFFF)                                       // queue_id = -1
+	binary.LittleEndian.PutUint16(sqe[54:56], uint16(unsafe.Sizeof(info)))                  // len
+	binary.LittleEndian.PutUint64(sqe[56:64], uint64(uintptr(unsafe.Pointer(&infoBuf[0])))) // addr
 	// data[0] at offset 64
 	binary.LittleEndian.PutUint64(sqe[64:72], 0) // data[0]
 

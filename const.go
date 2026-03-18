@@ -48,7 +48,7 @@ const (
 	iocDirBits  = 2  // bits for data direction
 
 	iocNrShift   = 0
-	iocTypeShift = iocNrShift + iocNrBits   // 8
+	iocTypeShift = iocNrShift + iocNrBits     // 8
 	iocSizeShift = iocTypeShift + iocTypeBits // 16
 	iocDirShift  = iocSizeShift + iocSizeBits // 30
 )
@@ -58,8 +58,8 @@ func ioc(dir, typ, nr, size uint32) uint32 {
 	return (dir << iocDirShift) | (typ << iocTypeShift) | (nr << iocNrShift) | (size << iocSizeShift)
 }
 
-func ior(typ, nr, size uint32) uint32  { return ioc(iocRead, typ, nr, size) }        // _IOR
-func iow(typ, nr, size uint32) uint32  { return ioc(iocWrite, typ, nr, size) }       // _IOW
+func ior(typ, nr, size uint32) uint32  { return ioc(iocRead, typ, nr, size) }          // _IOR
+func iow(typ, nr, size uint32) uint32  { return ioc(iocWrite, typ, nr, size) }         // _IOW
 func iowr(typ, nr, size uint32) uint32 { return ioc(iocRead|iocWrite, typ, nr, size) } // _IOWR
 
 // ublkType is the ioctl type character for ublk commands ('u' = 0x75).
@@ -104,9 +104,9 @@ var (
 
 // IO result codes returned in CQE.Res for IO commands.
 const (
-	IOResOK          = 0           // IO completed successfully
-	IOResNeedGetData = 1           // server must issue NEED_GET_DATA to get write data
-	IOResAbort       = -int32(19)  // -ENODEV: device is being torn down, no re-fetch
+	IOResOK          = 0          // IO completed successfully
+	IOResNeedGetData = 1          // server must issue NEED_GET_DATA to get write data
+	IOResAbort       = -int32(19) // -ENODEV: device is being torn down, no re-fetch
 )
 
 // Buffer layout constants. The ublk driver maps a shared memory region for

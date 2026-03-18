@@ -254,23 +254,23 @@ func (d *Device) serveQueueZeroCopy(qid uint16, h ZeroCopyHandler, ready chan<- 
 						return err
 					}
 					return fmt.Errorf("cqe error for tag %d: %d", tag, res)
-					}
-					pendingCommit[tag] = false
+				}
+				pendingCommit[tag] = false
 
-					req := &reqs[tag]
-					req.Op = IOOp(iod.OpFlags & 0xff)
-					req.Flags = iod.OpFlags >> 8
-					req.StartSector = iod.StartSector
-					req.NrSectors = iod.NrSectors
-					req.Tag = tag
-					req.QueueID = qid
-					req.BufIndex = tag // auto-buf-reg uses tag as buffer index
-					req.ring = ring
-					req.charFd = charFd
-					req.dev = d
+				req := &reqs[tag]
+				req.Op = IOOp(iod.OpFlags & 0xff)
+				req.Flags = iod.OpFlags >> 8
+				req.StartSector = iod.StartSector
+				req.NrSectors = iod.NrSectors
+				req.Tag = tag
+				req.QueueID = qid
+				req.BufIndex = tag // auto-buf-reg uses tag as buffer index
+				req.ring = ring
+				req.charFd = charFd
+				req.dev = d
 
-					result := int32(req.NrSectors) * 512
-					if err := h.HandleIO(req); err != nil {
+				result := int32(req.NrSectors) * 512
+				if err := h.HandleIO(req); err != nil {
 					result = -int32(syscall.EIO)
 				}
 
