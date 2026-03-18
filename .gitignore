@@ -1,0 +1,9 @@
+/.tmp/
+/.claude/
+
+# Local build outputs
+/go-ublk-null
+/perf-compare
+
+# Local logs
+/fs_log.txt
