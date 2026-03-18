@@ -1,7 +1,6 @@
 package ublk
 
 import (
-	"errors"
 	"fmt"
 	"runtime"
 	"syscall"
@@ -39,7 +38,7 @@ type ZeroCopyRequest struct {
 	// kernel buffer. Use with ReadFixed/WriteFixed.
 	BufIndex uint16
 
-	ring   *ioURing
+	ring   queueRing
 	charFd int32
 	dev    *Device
 }
@@ -165,11 +164,9 @@ func (d *Device) serveQueueZeroCopy(qid uint16, h ZeroCopyHandler, ready chan<- 
 	}
 	defer func() { _ = syscall.Munmap(cmdBuf) }()
 
-	for tag := uint16(0); tag < d.info.QueueDepth; tag++ {
-		if err := d.submitFetchAutoBuf(ring, qid, tag); err != nil {
-			ready <- fmt.Errorf("initial fetch tag %d: %w", tag, err)
-			return err
-		}
+	if err := d.submitInitialFetchesAutoBuf(ring, qid); err != nil {
+		ready <- err
+		return err
 	}
 
 	if err := ring.Submit(); err != nil {
@@ -179,135 +176,12 @@ func (d *Device) serveQueueZeroCopy(qid uint16, h ZeroCopyHandler, ready chan<- 
 
 	ready <- nil
 
-	charFd := int32(d.charFile.Fd())
-	reqs := make([]ZeroCopyRequest, d.info.QueueDepth)
-	pendingCommit := make([]bool, d.info.QueueDepth)
-	var nextCQE *ioURingCQE
-	flushQueued := func(batchQueued int) error {
-		if batchQueued == 0 {
-			return nil
-		}
-		if err := ring.Submit(); err != nil {
-			if errors.Is(err, syscall.EBADF) && d.isStopped() {
-				return nil
-			}
-			return fmt.Errorf("submit commit batch: %w", err)
-		}
-		return nil
-	}
-
-	for {
-		select {
-		case <-d.stopped:
-			return nil
-		default:
-		}
-
-		cqe := nextCQE
-		nextCQE = nil
-		if cqe == nil {
-			var err error
-			cqe, err = ring.WaitCQE()
-			if err != nil {
-				if errors.Is(err, syscall.EINTR) {
-					continue
-				}
-				if errors.Is(err, syscall.EBADF) && d.isStopped() {
-					return nil
-				}
-				return fmt.Errorf("wait cqe: %w", err)
-			}
-		}
-
-		batchQueued := 0
-		budget := int(ring.AvailableSQEs())
-		if budget < 1 {
-			budget = 1
-		}
-
-		for {
-			tag := uint16(cqe.UserData)
-			res := cqe.Res
-			var iod ioDesc
-			if res >= 0 {
-				iod = loadIODesc(cmdBuf, tag)
-			}
-			ring.SeenCQE(cqe)
-
-			if res == int32(-int32(syscall.ENODEV)) {
-				if err := flushQueued(batchQueued); err != nil {
-					return err
-				}
-				return nil
-			}
-			if res == int32(-int32(syscall.EBADF)) && d.isStopped() {
-				if err := flushQueued(batchQueued); err != nil {
-					return err
-				}
-				return nil
-			}
-			if res == int32(-int32(syscall.EBUSY)) && pendingCommit[tag] {
-				// Nothing to queue for this CQE.
-			} else {
-				if res < 0 {
-					if err := flushQueued(batchQueued); err != nil {
-						return err
-					}
-					return fmt.Errorf("cqe error for tag %d: %d", tag, res)
-				}
-				pendingCommit[tag] = false
-
-				req := &reqs[tag]
-				req.Op = IOOp(iod.OpFlags & 0xff)
-				req.Flags = iod.OpFlags >> 8
-				req.StartSector = iod.StartSector
-				req.NrSectors = iod.NrSectors
-				req.Tag = tag
-				req.QueueID = qid
-				req.BufIndex = tag // auto-buf-reg uses tag as buffer index
-				req.ring = ring
-				req.charFd = charFd
-				req.dev = d
-
-				result := int32(req.NrSectors) * 512
-				if err := h.HandleIO(req); err != nil {
-					result = -int32(syscall.EIO)
-				}
-
-				if err := d.submitCommitAndFetchAutoBuf(ring, qid, tag, result); err != nil {
-					if err2 := flushQueued(batchQueued); err2 != nil {
-						return err2
-					}
-					return fmt.Errorf("commit tag %d: %w", tag, err)
-				}
-				pendingCommit[tag] = true
-				batchQueued++
-			}
-
-			if batchQueued >= budget {
-				break
-			}
-			next := ring.TryCQE()
-			if next == nil {
-				break
-			}
-			cqe = next
-		}
-
-		if batchQueued == 0 {
-			continue
-		}
-		nextCQE, err = ring.SubmitAndWaitCQE()
-		if err != nil {
-			if errors.Is(err, syscall.EBADF) && d.isStopped() {
-				return nil
-			}
-			return fmt.Errorf("submit+wait commit batch: %w", err)
-		}
-	}
+	return d.runZeroCopyQueueLoop(ring, qid, int32(d.charFile.Fd()), func(tag uint16) ioDesc {
+		return loadIODesc(cmdBuf, tag)
+	}, h)
 }
 
-func (d *Device) submitFetchAutoBuf(ring *ioURing, qid, tag uint16) error {
+func (d *Device) submitFetchAutoBuf(ring queueRing, qid, tag uint16) error {
 	sqe := ring.GetSQE()
 	if sqe == nil {
 		return fmt.Errorf("no SQE available")
@@ -318,7 +192,7 @@ func (d *Device) submitFetchAutoBuf(ring *ioURing, qid, tag uint16) error {
 	return nil
 }
 
-func (d *Device) submitCommitAndFetchAutoBuf(ring *ioURing, qid, tag uint16, result int32) error {
+func (d *Device) submitCommitAndFetchAutoBuf(ring queueRing, qid, tag uint16, result int32) error {
 	sqe := ring.GetSQE()
 	if sqe == nil {
 		return fmt.Errorf("no SQE available")

@@ -46,8 +46,9 @@ type Device struct {
 	id   int32
 	info DevInfo
 
-	ctrlFile *os.File // /dev/ublk-control
-	charFile *os.File // /dev/ublkcN
+	ctrlFile     *os.File // /dev/ublk-control
+	charFile     *os.File // /dev/ublkcN
+	userCopyData userCopyReadWriter
 
 	ctrlRing  *ioURing // io_uring for control commands
 	ioRings   []*ioURing
@@ -113,7 +114,7 @@ type Request struct {
 func (r *Request) ReadData(buf []byte) (int, error) {
 	off := ublkIOBufOffset(r.QueueID, r.Tag)
 	ioDebugf("ReadData q=%d tag=%d size=%d off=%d", r.QueueID, r.Tag, len(buf), off)
-	return readFullAt(r.dev.charFile, buf, int64(off))
+	return readFullAt(r.dev.activeUserCopyTarget(), buf, int64(off))
 }
 
 // WriteData writes buf into the IO data buffer. For read requests, this provides
@@ -121,7 +122,7 @@ func (r *Request) ReadData(buf []byte) (int, error) {
 func (r *Request) WriteData(buf []byte) (int, error) {
 	off := ublkIOBufOffset(r.QueueID, r.Tag)
 	ioDebugf("WriteData q=%d tag=%d size=%d off=%d", r.QueueID, r.Tag, len(buf), off)
-	n, err := writeFullAt(r.dev.charFile, buf, int64(off))
+	n, err := writeFullAt(r.dev.activeUserCopyTarget(), buf, int64(off))
 	if err == nil || len(buf) == 0 || !errors.Is(err, syscall.EINVAL) || n == len(buf) {
 		if err != nil {
 			ioDebugf("WriteData error q=%d tag=%d size=%d off=%d wrote=%d err=%v", r.QueueID, r.Tag, len(buf), off, n, err)
@@ -521,12 +522,9 @@ func (d *Device) serveQueue(qid uint16, h Handler, ready chan<- error) error {
 	}
 	defer func() { _ = syscall.Munmap(cmdBuf) }()
 
-	// Issue initial FETCH_REQ for all slots
-	for tag := uint16(0); tag < d.info.QueueDepth; tag++ {
-		if err := d.submitFetch(ring, qid, tag); err != nil {
-			ready <- fmt.Errorf("initial fetch tag %d: %w", tag, err)
-			return err
-		}
+	if err := d.submitInitialFetches(ring, qid); err != nil {
+		ready <- err
+		return err
 	}
 
 	if err := ring.Submit(); err != nil {
@@ -537,201 +535,14 @@ func (d *Device) serveQueue(qid uint16, h Handler, ready chan<- error) error {
 	// Signal that this queue is ready (FETCHes submitted).
 	ready <- nil
 
-	debugEnabled := ioDebugEnabled()
-	verifyDescEnabled := ioDebugVerifyDescEnabled()
-	delaySeenEnabled := ioDebugDelaySeenEnabled()
-	batchStatsEnabled := ioDebugBatchStatsEnabled()
-	pendingCommit := make([]bool, d.info.QueueDepth)
-	reqs := make([]Request, d.info.QueueDepth)
-	var nextCQE *ioURingCQE
-	var batchSubmitCalls uint64
-	var batchCommitted uint64
-	maxBatchCommitted := 0
-	defer func() {
-		if batchStatsEnabled {
-			ioDebugf("batch stats q=%d submit_waits=%d committed=%d avg_batch=%.2f max_batch=%d",
-				qid,
-				batchSubmitCalls,
-				batchCommitted,
-				func() float64 {
-					if batchSubmitCalls == 0 {
-						return 0
-					}
-					return float64(batchCommitted) / float64(batchSubmitCalls)
-				}(),
-				maxBatchCommitted,
-			)
-		}
-	}()
-	flushQueued := func(batchQueued int) error {
-		if batchQueued == 0 {
-			return nil
-		}
-		if err := ring.Submit(); err != nil {
-			if errors.Is(err, syscall.EBADF) && d.isStopped() {
-				return nil
-			}
-			return fmt.Errorf("submit commit batch: %w", err)
-		}
-		return nil
-	}
-
-	for {
-		select {
-		case <-d.stopped:
-			return nil
-		default:
-		}
-
-		cqe := nextCQE
-		nextCQE = nil
-		if cqe == nil {
-			var err error
-			cqe, err = ring.WaitCQE()
-			if err != nil {
-				if errors.Is(err, syscall.EINTR) {
-					continue
-				}
-				if errors.Is(err, syscall.EBADF) && d.isStopped() {
-					return nil
-				}
-				return fmt.Errorf("wait cqe: %w", err)
-			}
-		}
-
-		batchQueued := 0
-		budget := int(ring.AvailableSQEs())
-		if budget < 1 {
-			budget = 1
-		}
-
-		for {
-			tag := uint16(cqe.UserData)
-			res := cqe.Res
-			var iod ioDesc
-			seen := false
-			if res >= 0 {
-				if verifyDescEnabled {
-					first, second := snapshotIODescBytes(cmdBuf, tag), snapshotIODescBytes(cmdBuf, tag)
-					if first != second {
-						ioDebugf("iod unstable q=%d tag=%d first=%x second=%x", qid, tag, first, second)
-					}
-				}
-				iod = loadIODesc(cmdBuf, tag)
-			}
-			if debugEnabled {
-				ioDebugf("cqe q=%d tag=%d res=%d pendingCommit=%t", qid, tag, res, pendingCommit[tag])
-			}
-			if !delaySeenEnabled {
-				ring.SeenCQE(cqe)
-				seen = true
-			}
-
-			if res == int32(-int32(syscall.ENODEV)) {
-				if !seen {
-					ring.SeenCQE(cqe)
-				}
-				if err := flushQueued(batchQueued); err != nil {
-					return err
-				}
-				return nil
-			}
-			if res == int32(-int32(syscall.EBADF)) {
-				// Ring was interrupted by Delete().
-				if !seen {
-					ring.SeenCQE(cqe)
-				}
-				if err := flushQueued(batchQueued); err != nil {
-					return err
-				}
-				return nil
-			}
-			if res == int32(-int32(syscall.EBUSY)) && pendingCommit[tag] {
-				if !seen {
-					ring.SeenCQE(cqe)
-				}
-			} else {
-				if res < 0 {
-					if !seen {
-						ring.SeenCQE(cqe)
-					}
-					if err := flushQueued(batchQueued); err != nil {
-						return err
-					}
-					return fmt.Errorf("cqe error for tag %d: %d", tag, res)
-				}
-				pendingCommit[tag] = false
-
-				req := &reqs[tag]
-				req.Op = IOOp(iod.OpFlags & 0xff)
-				req.Flags = iod.OpFlags >> 8
-				req.StartSector = iod.StartSector
-				req.NrSectors = iod.NrSectors
-				req.Tag = tag
-				req.QueueID = qid
-				req.dev = d
-
-				result := int32(req.NrSectors) * 512
-				if debugEnabled {
-					ioDebugf("handle q=%d tag=%d op=%d flags=%d start=%d sectors=%d", qid, tag, req.Op, req.Flags, req.StartSector, req.NrSectors)
-				}
-				if err := h.HandleIO(req); err != nil {
-					if debugEnabled {
-						ioDebugf("handle error q=%d tag=%d err=%v", qid, tag, err)
-					}
-					result = -int32(syscall.EIO)
-				}
-
-				if debugEnabled {
-					ioDebugf("commit q=%d tag=%d result=%d", qid, tag, result)
-				}
-				if err := d.submitCommitAndFetch(ring, qid, tag, result); err != nil {
-					if !seen {
-						ring.SeenCQE(cqe)
-					}
-					if err2 := flushQueued(batchQueued); err2 != nil {
-						return err2
-					}
-					return fmt.Errorf("commit tag %d: %w", tag, err)
-				}
-				pendingCommit[tag] = true
-				batchQueued++
-			}
-
-			if !seen {
-				ring.SeenCQE(cqe)
-			}
-			if batchQueued >= budget {
-				break
-			}
-			next := ring.TryCQE()
-			if next == nil {
-				break
-			}
-			cqe = next
-		}
-
-		if batchQueued == 0 {
-			continue
-		}
-		if batchStatsEnabled {
-			batchSubmitCalls++
-			batchCommitted += uint64(batchQueued)
-			if batchQueued > maxBatchCommitted {
-				maxBatchCommitted = batchQueued
-			}
-		}
-		nextCQE, err = ring.SubmitAndWaitCQE()
-		if err != nil {
-			if errors.Is(err, syscall.EBADF) && d.isStopped() {
-				return nil
-			}
-			return fmt.Errorf("submit+wait commit batch: %w", err)
-		}
-	}
+	return d.runUserQueueLoop(ring, qid, func(tag uint16) ioDesc {
+		return loadIODesc(cmdBuf, tag)
+	}, func(tag uint16) [ioDescSize]byte {
+		return snapshotIODescBytes(cmdBuf, tag)
+	}, h)
 }
 
-func (d *Device) submitFetch(ring *ioURing, qid, tag uint16) error {
+func (d *Device) submitFetch(ring queueRing, qid, tag uint16) error {
 	sqe := ring.GetSQE()
 	if sqe == nil {
 		return fmt.Errorf("no SQE available")
@@ -742,7 +553,7 @@ func (d *Device) submitFetch(ring *ioURing, qid, tag uint16) error {
 	return nil
 }
 
-func (d *Device) submitCommitAndFetch(ring *ioURing, qid, tag uint16, result int32) error {
+func (d *Device) submitCommitAndFetch(ring queueRing, qid, tag uint16, result int32) error {
 	sqe := ring.GetSQE()
 	if sqe == nil {
 		return fmt.Errorf("no SQE available")

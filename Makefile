@@ -4,7 +4,11 @@
 
 GO ?= go
 GO_FILES := $(shell find . -name '*.go' -not -path './.git/*' -not -path './.tmp/*')
-UNIT_TEST_RUN := ^(TestIOURing|TestReadFullAt|TestWriteFullAt)
+# Portable unit tests that run on macOS and in the GitHub-hosted workflow.
+UNIT_TEST_RUN := ^(TestIOURing|TestReadFullAt|TestWriteFullAt|TestRequest|TestCtrl|TestQueue|TestZeroCopy)
+# Report native unit coverage for the core library package instead of diluting it with command packages.
+COVERAGE_PACKAGE := .
+COVERAGE_PROFILE := .tmp/coverage/unit.cover.out
 
 build:
 	$(GO) build ./...
@@ -14,8 +18,8 @@ test:
 
 coverage:
 	mkdir -p .tmp/coverage
-	$(GO) test -coverprofile=.tmp/coverage/unit.cover.out -run '$(UNIT_TEST_RUN)' ./...
-	$(GO) tool cover -func=.tmp/coverage/unit.cover.out
+	$(GO) test -coverprofile=$(COVERAGE_PROFILE) -run '$(UNIT_TEST_RUN)' $(COVERAGE_PACKAGE)
+	$(GO) tool cover -func=$(COVERAGE_PROFILE)
 
 check:
 	@fmt_out="$$(gofmt -l $(GO_FILES))"; \

@@ -47,23 +47,10 @@ func (d *Device) tryCtrlAddDev(info *DevInfo) error {
 	}
 
 	cmdOp := d.ctrlOp(ublkUCmdAddDev, CmdAddDev)
-	sqe := d.ctrlRing.GetSQE()
-	if sqe == nil {
-		return fmt.Errorf("no SQE available")
-	}
-	prepCtrlCmd(sqe, cmdOp, int32(d.ctrlFile.Fd()), &cmd)
-	sqeSetU64(sqe, sqeOffUserData, 1)
-
-	if err := d.ctrlRing.Submit(); err != nil {
-		return err
-	}
-
-	cqe, err := d.ctrlRing.WaitCQE()
+	res, err := submitCtrlCmdAndWait(d.ctrlRing, int32(d.ctrlFile.Fd()), cmdOp, &cmd)
 	if err != nil {
 		return err
 	}
-	res := cqe.Res
-	d.ctrlRing.SeenCQE(cqe)
 
 	if res < 0 {
 		return fmt.Errorf("ADD_DEV failed: %w", errnoFromResult(res))
@@ -160,23 +147,10 @@ func (d *Device) simpleCtrlCmd(encoded, legacy uint32) error {
 }
 
 func (d *Device) ctrlCmdWithPayload(cmdOp uint32, cmd *ctrlCmd) error {
-	sqe := d.ctrlRing.GetSQE()
-	if sqe == nil {
-		return fmt.Errorf("no SQE available")
-	}
-	prepCtrlCmd(sqe, cmdOp, int32(d.ctrlFile.Fd()), cmd)
-	sqeSetU64(sqe, sqeOffUserData, 1)
-
-	if err := d.ctrlRing.Submit(); err != nil {
-		return err
-	}
-
-	cqe, err := d.ctrlRing.WaitCQE()
+	res, err := submitCtrlCmdAndWait(d.ctrlRing, int32(d.ctrlFile.Fd()), cmdOp, cmd)
 	if err != nil {
 		return err
 	}
-	res := cqe.Res
-	d.ctrlRing.SeenCQE(cqe)
 
 	if res < 0 {
 		return fmt.Errorf("ublk ctrl cmd 0x%x failed: %w", cmdOp, errnoFromResult(res))
