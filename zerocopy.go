@@ -131,26 +131,53 @@ func (d *Device) serveQueueZeroCopy(qid uint16, h ZeroCopyHandler, ready chan<- 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	d.setQueueAffinity(qid)
+	d.applyQueueAffinity(qid)
 
-	depth := int(d.info.QueueDepth)
-
-	ring, err := newIOURing(uint32(depth)*4, false)
+	resources, err := d.prepareZeroCopyQueue(qid)
 	if err != nil {
 		ready <- err
 		return err
 	}
-	d.registerIORing(ring)
-	defer func() { _ = ring.Close() }()
+	if resources.release != nil {
+		defer resources.release()
+	}
 
-	if err := ring.RegisterSparseBuffers(uint32(depth)); err != nil {
-		ready <- fmt.Errorf("register sparse buffers: %w", err)
+	if err := d.submitInitialFetchesAutoBuf(resources.ring, qid); err != nil {
+		ready <- err
 		return err
+	}
+
+	if err := resources.ring.Submit(); err != nil {
+		ready <- fmt.Errorf("submit initial fetches: %w", err)
+		return err
+	}
+
+	ready <- nil
+
+	return d.runZeroCopyQueueLoop(resources.ring, qid, resources.charFD, func(tag uint16) ioDesc {
+		return loadIODesc(resources.cmdBuf, tag)
+	}, h)
+}
+
+func (d *Device) prepareZeroCopyQueue(qid uint16) (*preparedZeroCopyQueue, error) {
+	if d.hooks != nil && d.hooks.prepareZeroCopyQueue != nil {
+		return d.hooks.prepareZeroCopyQueue(d, qid)
+	}
+
+	ringDepth := uint32(d.info.QueueDepth) * zeroCopyRingDepthMultiplier
+	ring, err := newIOURing(ringDepth, false)
+	if err != nil {
+		return nil, err
+	}
+	d.registerIORing(ring)
+
+	if err := ring.RegisterSparseBuffers(uint32(d.info.QueueDepth)); err != nil {
+		_ = ring.Close()
+		return nil, fmt.Errorf("register sparse buffers: %w", err)
 	}
 
 	cmdBufSize := ublkMaxCmdBufSize(d.info.QueueDepth)
 	cmdBufOffset := int64(ublkSrvCmdBufOffset) + int64(qid)*int64(ublkMaxCmdBufSize(ublkMaxQueueDepth))
-
 	cmdBuf, err := syscall.Mmap(
 		int(d.charFile.Fd()),
 		cmdBufOffset,
@@ -159,26 +186,19 @@ func (d *Device) serveQueueZeroCopy(qid uint16, h ZeroCopyHandler, ready chan<- 
 		syscall.MAP_SHARED|mmapPopulateFlag,
 	)
 	if err != nil {
-		ready <- fmt.Errorf("mmap cmd buf: %w", err)
-		return err
-	}
-	defer func() { _ = syscall.Munmap(cmdBuf) }()
-
-	if err := d.submitInitialFetchesAutoBuf(ring, qid); err != nil {
-		ready <- err
-		return err
+		_ = ring.Close()
+		return nil, fmt.Errorf("mmap cmd buf: %w", err)
 	}
 
-	if err := ring.Submit(); err != nil {
-		ready <- fmt.Errorf("submit initial fetches: %w", err)
-		return err
-	}
-
-	ready <- nil
-
-	return d.runZeroCopyQueueLoop(ring, qid, int32(d.charFile.Fd()), func(tag uint16) ioDesc {
-		return loadIODesc(cmdBuf, tag)
-	}, h)
+	return &preparedZeroCopyQueue{
+		ring:   ring,
+		cmdBuf: cmdBuf,
+		charFD: int32(d.charFile.Fd()),
+		release: func() {
+			_ = syscall.Munmap(cmdBuf)
+			_ = ring.Close()
+		},
+	}, nil
 }
 
 func (d *Device) submitFetchAutoBuf(ring queueRing, qid, tag uint16) error {

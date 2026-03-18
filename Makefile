@@ -5,7 +5,7 @@
 GO ?= go
 GO_FILES := $(shell find . -name '*.go' -not -path './.git/*' -not -path './.tmp/*')
 # Portable unit tests that run on macOS and in the GitHub-hosted workflow.
-UNIT_TEST_RUN := ^(TestIOURing|TestReadFullAt|TestWriteFullAt|TestRequest|TestCtrl|TestQueue|TestZeroCopy|TestServe|TestStop|TestDelete|TestAffinity)
+UNIT_TEST_RUN := ^(TestIOURing|TestReadFullAt|TestWriteFullAt|TestRequest|TestCtrl|TestQueue|TestZeroCopy|TestServe|TestStop|TestDelete|TestAffinity|TestNewDevice|TestSetParams|TestGetParams|TestDevice)
 # Report native unit coverage for the core library package instead of diluting it with command packages.
 COVERAGE_PACKAGE := .
 COVERAGE_PROFILE := .tmp/coverage/unit.cover.out

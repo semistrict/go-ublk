@@ -328,6 +328,29 @@ func TestCtrlSubmitNoWait(t *testing.T) {
 	})
 }
 
+func TestCtrlAddDevRetryPolicy(t *testing.T) {
+	t.Run("retries legacy for plain user-copy EINVAL", func(t *testing.T) {
+		retry := shouldRetryLegacyAddDev(syscall.EINVAL, FlagUserCopy|FlagCmdIoctlEncode)
+		if !retry {
+			t.Fatalf("retry = false, want true")
+		}
+	})
+
+	t.Run("does not retry zero-copy EINVAL", func(t *testing.T) {
+		retry := shouldRetryLegacyAddDev(syscall.EINVAL, FlagSupportZeroCopy|FlagAutoBufReg|FlagCmdIoctlEncode)
+		if retry {
+			t.Fatalf("retry = true, want false")
+		}
+	})
+
+	t.Run("does not retry other errors", func(t *testing.T) {
+		retry := shouldRetryLegacyAddDev(syscall.EPERM, FlagUserCopy|FlagCmdIoctlEncode)
+		if retry {
+			t.Fatalf("retry = true, want false")
+		}
+	})
+}
+
 func TestQueueInitialFetches(t *testing.T) {
 	dev := newTestDevice(t, 2)
 	ring := &fakeQueueRing{}

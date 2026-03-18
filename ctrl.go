@@ -21,7 +21,7 @@ func (d *Device) ctrlAddDev(info *DevInfo) error {
 
 	// If the ioctl-encoded command failed with EINVAL, the kernel may not
 	// support UBLK_F_CMD_IOCTL_ENCODE. Retry with legacy encoding.
-	if errors.Is(err, syscall.EINVAL) {
+	if shouldRetryLegacyAddDev(err, info.Flags) {
 		info.Flags &^= FlagCmdIoctlEncode
 		d.legacyCmds = true
 		return d.tryCtrlAddDev(info)
@@ -173,6 +173,16 @@ func (d *Device) ioOp(encoded, legacy uint32) uint32 {
 // This allows callers to use errors.Is(err, syscall.EINVAL) etc.
 func errnoFromResult(res int32) syscall.Errno {
 	return syscall.Errno(-res)
+}
+
+func shouldRetryLegacyAddDev(err error, flags uint64) bool {
+	if !errors.Is(err, syscall.EINVAL) {
+		return false
+	}
+	// Zero-copy feature flags can also surface EINVAL on older kernels. In that
+	// case, retrying with legacy command encoding is wasted work because the
+	// unsupported feature bits remain unchanged.
+	return flags&FlagSupportZeroCopy == 0
 }
 
 func copyDevInfoToBytes(buf []byte, info *DevInfo) {

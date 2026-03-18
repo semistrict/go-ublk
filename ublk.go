@@ -230,78 +230,47 @@ func ublkIOBufOffset(queueID, tag uint16) uint64 {
 
 // NewDevice creates a new ublk device via /dev/ublk-control.
 func NewDevice(opts DeviceOptions) (*Device, error) {
-	if opts.Queues == 0 {
-		opts.Queues = 1
-	}
-	if opts.QueueDepth == 0 {
-		opts.QueueDepth = 128
-	}
-	if opts.MaxIOBufBytes == 0 {
-		opts.MaxIOBufBytes = 512 * 1024
-	}
-	if opts.Flags&FlagSupportZeroCopy != 0 {
-		// Zero-copy mode: do NOT add user-copy (mutually exclusive).
-		// AUTO_BUF_REG is added for the ServeZeroCopy path.
-		opts.Flags |= FlagAutoBufReg | FlagCmdIoctlEncode
-	} else {
-		opts.Flags |= FlagUserCopy | FlagCmdIoctlEncode
-	}
-	// Also don't retry with legacy encoding if zero-copy flags cause EINVAL —
-	// that means the kernel doesn't support them, not an encoding issue.
+	return newDeviceWithHooks(opts, nil)
+}
 
-	ctrlFile, err := os.OpenFile(controlDevPath, os.O_RDWR, 0)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", controlDevPath, err)
-	}
-
-	ring, err := newIOURing(4, true) // SQE128 for control commands
-	if err != nil {
-		_ = ctrlFile.Close()
-		return nil, fmt.Errorf("create control io_uring: %w", err)
-	}
+func newDeviceWithHooks(opts DeviceOptions, hooks *deviceHooks) (*Device, error) {
+	opts = normalizeDeviceOptions(opts)
 
 	dev := &Device{
-		id:       -1,
-		ctrlFile: ctrlFile,
-		ctrlRing: ring,
-		stopped:  make(chan struct{}),
+		id:      -1,
+		info:    newDeviceInfo(opts),
+		stopped: make(chan struct{}),
+		hooks:   hooks,
 	}
 
-	info := DevInfo{
-		NrHwQueues:    opts.Queues,
-		QueueDepth:    opts.QueueDepth,
-		MaxIOBufBytes: opts.MaxIOBufBytes,
-		DevID:         ^uint32(0), // -1: let kernel assign
-		UblksrvPID:    int32(syscall.Getpid()),
-		Flags:         opts.Flags,
+	ctrlFile, ring, err := dev.createControlResources()
+	if err != nil {
+		return nil, err
 	}
+	dev.ctrlFile = ctrlFile
+	dev.ctrlRing = ring
 
-	if err := dev.ctrlAddDev(&info); err != nil {
-		_ = ring.Close()
-		_ = ctrlFile.Close()
+	if err := dev.addControlDevice(&dev.info); err != nil {
+		_ = dev.closeControlRing()
+		_ = dev.closeControlFile()
 		return nil, fmt.Errorf("add device: %w", err)
 	}
+	dev.id = int32(dev.info.DevID)
 
-	dev.info = info
-	dev.id = int32(info.DevID)
-
-	// Wait for udev to create the char device node.
-	charPath := fmt.Sprintf("/dev/ublkc%d", dev.id)
-	for attempts := 0; attempts < 50; attempts++ {
-		dev.charFile, err = os.OpenFile(charPath, os.O_RDWR, 0)
-		if err == nil {
-			break
+	charPath := charDevicePathForID(dev.id)
+	var openErr error
+	for attempt := 0; attempt < charDevicePollAttempts; attempt++ {
+		dev.charFile, openErr = dev.openCharDevice(charPath)
+		if openErr == nil && dev.charFile != nil {
+			return dev, nil
 		}
-		time.Sleep(devicePollInterval)
-	}
-	if dev.charFile == nil {
-		_ = dev.ctrlDelDev()
-		_ = ring.Close()
-		_ = ctrlFile.Close()
-		return nil, fmt.Errorf("open %s: %w", charPath, err)
+		dev.sleep(devicePollInterval)
 	}
 
-	return dev, nil
+	_ = dev.deleteControl()
+	_ = dev.closeControlRing()
+	_ = dev.closeControlFile()
+	return nil, fmt.Errorf("open %s: %w", charPath, openErr)
 }
 
 // ID returns the device ID.
@@ -312,18 +281,18 @@ func (d *Device) Info() DevInfo { return d.info }
 
 // BlockDevPath returns the path to the block device (e.g., /dev/ublkb0).
 func (d *Device) BlockDevPath() string {
-	return fmt.Sprintf("/dev/ublkb%d", d.id)
+	return blockDevicePathForID(d.id)
 }
 
 // CharDevPath returns the path to the character device (e.g., /dev/ublkc0).
 func (d *Device) CharDevPath() string {
-	return fmt.Sprintf("/dev/ublkc%d", d.id)
+	return charDevicePathForID(d.id)
 }
 
 // SetParams sets device parameters.
 func (d *Device) SetParams(params *Params) error {
 	params.Len = uint32(unsafe.Sizeof(*params))
-	return d.ctrlSetParams(params)
+	return d.setParamsControl(params)
 }
 
 // GetParams retrieves device parameters.
@@ -332,7 +301,7 @@ func (d *Device) GetParams() (*Params, error) {
 		Len:   uint32(unsafe.Sizeof(Params{})),
 		Types: ParamTypeAll,
 	}
-	if err := d.ctrlGetParams(params); err != nil {
+	if err := d.getParamsControl(params); err != nil {
 		return nil, err
 	}
 	return params, nil
@@ -476,27 +445,19 @@ func (d *Device) registerIORing(ring *ioURing) {
 	d.ioRingsMu.Unlock()
 }
 
-func (d *Device) serveQueue(qid uint16, h Handler, ready chan<- error) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	ioDebugf("serveQueue start q=%d depth=%d", qid, d.info.QueueDepth)
+func (d *Device) prepareUserQueue(qid uint16) (*preparedUserQueue, error) {
+	if d.hooks != nil && d.hooks.prepareUserQueue != nil {
+		return d.hooks.prepareUserQueue(d, qid)
+	}
 
-	d.applyQueueAffinity(qid)
-
-	depth := int(d.info.QueueDepth)
-
-	ring, err := newIOURing(uint32(depth), false)
+	ring, err := newIOURing(uint32(d.info.QueueDepth), false)
 	if err != nil {
-		ready <- fmt.Errorf("create io_uring: %w", err)
-		return err
+		return nil, fmt.Errorf("create io_uring: %w", err)
 	}
 	d.registerIORing(ring)
-	defer func() { _ = ring.Close() }()
 
-	// mmap the command buffer for this queue
 	cmdBufSize := ublkMaxCmdBufSize(d.info.QueueDepth)
 	cmdBufOffset := int64(ublkSrvCmdBufOffset) + int64(qid)*int64(ublkMaxCmdBufSize(ublkMaxQueueDepth))
-
 	cmdBuf, err := syscall.Mmap(
 		int(d.charFile.Fd()),
 		cmdBufOffset,
@@ -505,17 +466,42 @@ func (d *Device) serveQueue(qid uint16, h Handler, ready chan<- error) error {
 		syscall.MAP_SHARED|mmapPopulateFlag,
 	)
 	if err != nil {
-		ready <- fmt.Errorf("mmap cmd buf: %w", err)
+		_ = ring.Close()
+		return nil, fmt.Errorf("mmap cmd buf: %w", err)
+	}
+
+	return &preparedUserQueue{
+		ring:   ring,
+		cmdBuf: cmdBuf,
+		release: func() {
+			_ = syscall.Munmap(cmdBuf)
+			_ = ring.Close()
+		},
+	}, nil
+}
+
+func (d *Device) serveQueue(qid uint16, h Handler, ready chan<- error) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	ioDebugf("serveQueue start q=%d depth=%d", qid, d.info.QueueDepth)
+
+	d.applyQueueAffinity(qid)
+
+	resources, err := d.prepareUserQueue(qid)
+	if err != nil {
+		ready <- err
 		return err
 	}
-	defer func() { _ = syscall.Munmap(cmdBuf) }()
+	if resources.release != nil {
+		defer resources.release()
+	}
 
-	if err := d.submitInitialFetches(ring, qid); err != nil {
+	if err := d.submitInitialFetches(resources.ring, qid); err != nil {
 		ready <- err
 		return err
 	}
 
-	if err := ring.Submit(); err != nil {
+	if err := resources.ring.Submit(); err != nil {
 		ready <- fmt.Errorf("submit initial fetches: %w", err)
 		return err
 	}
@@ -523,10 +509,10 @@ func (d *Device) serveQueue(qid uint16, h Handler, ready chan<- error) error {
 	// Signal that this queue is ready (FETCHes submitted).
 	ready <- nil
 
-	return d.runUserQueueLoop(ring, qid, func(tag uint16) ioDesc {
-		return loadIODesc(cmdBuf, tag)
+	return d.runUserQueueLoop(resources.ring, qid, func(tag uint16) ioDesc {
+		return loadIODesc(resources.cmdBuf, tag)
 	}, func(tag uint16) [ioDescSize]byte {
-		return snapshotIODescBytes(cmdBuf, tag)
+		return snapshotIODescBytes(resources.cmdBuf, tag)
 	}, h)
 }
 

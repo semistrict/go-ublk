@@ -2,9 +2,12 @@ package ublk
 
 import (
 	"errors"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 const (
@@ -19,6 +22,30 @@ func newHookedDevice(queueCount uint16, hooks *deviceHooks) *Device {
 		stopped: make(chan struct{}),
 		hooks:   hooks,
 	}
+}
+
+func newServeTestDevice(t *testing.T, flags uint64, hooks *deviceHooks) *Device {
+	t.Helper()
+	return &Device{
+		info: DevInfo{
+			NrHwQueues: 1,
+			QueueDepth: 1,
+			Flags:      flags,
+		},
+		charFile: tempCharFile(t),
+		stopped:  make(chan struct{}),
+		hooks:    hooks,
+	}
+}
+
+func newReadyThenStopRing() *fakeQueueRing {
+	ring := &fakeQueueRing{
+		cqes: []*ioURingCQE{{UserData: uint64(testTagZero), Res: 0}},
+	}
+	ring.beforeSubmitAndWait = func() {
+		ring.cqes = append(ring.cqes, &ioURingCQE{UserData: uint64(testTagZero), Res: -int32(syscall.ENODEV)})
+	}
+	return ring
 }
 
 func TestServeLifecycleStartsAfterQueuesReady(t *testing.T) {
@@ -233,5 +260,291 @@ func TestAffinityGetQueueCmd(t *testing.T) {
 	}
 	if cmd.Addr == 0 {
 		t.Fatalf("Addr = 0, want non-zero")
+	}
+}
+
+func TestNewDeviceWithHooksDefaults(t *testing.T) {
+	var (
+		capturedInfo DevInfo
+		openPath     string
+	)
+	dev, err := newDeviceWithHooks(DeviceOptions{}, &deviceHooks{
+		createControlResources: func() (*os.File, *ioURing, error) {
+			return tempCharFile(t), nil, nil
+		},
+		addControlDevice: func(_ *Device, info *DevInfo) error {
+			capturedInfo = *info
+			info.DevID = 7
+			return nil
+		},
+		openCharDevice: func(_ *Device, path string) (*os.File, error) {
+			openPath = path
+			return tempCharFile(t), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("newDeviceWithHooks: %v", err)
+	}
+
+	if capturedInfo.NrHwQueues != defaultHardwareQueues {
+		t.Fatalf("queues = %d, want %d", capturedInfo.NrHwQueues, defaultHardwareQueues)
+	}
+	if capturedInfo.QueueDepth != defaultQueueDepth {
+		t.Fatalf("queue depth = %d, want %d", capturedInfo.QueueDepth, defaultQueueDepth)
+	}
+	if capturedInfo.MaxIOBufBytes != defaultMaxIOBufBytes {
+		t.Fatalf("max io buf = %d, want %d", capturedInfo.MaxIOBufBytes, defaultMaxIOBufBytes)
+	}
+	if capturedInfo.Flags&FlagUserCopy == 0 || capturedInfo.Flags&FlagCmdIoctlEncode == 0 {
+		t.Fatalf("flags = %#x, want user-copy + ioctl-encode", capturedInfo.Flags)
+	}
+	if openPath != charDevicePathForID(7) {
+		t.Fatalf("open path = %q, want %q", openPath, charDevicePathForID(7))
+	}
+	if dev.ID() != 7 {
+		t.Fatalf("ID = %d, want 7", dev.ID())
+	}
+	if dev.BlockDevPath() != blockDevicePathForID(7) {
+		t.Fatalf("BlockDevPath = %q, want %q", dev.BlockDevPath(), blockDevicePathForID(7))
+	}
+	if dev.CharDevPath() != charDevicePathForID(7) {
+		t.Fatalf("CharDevPath = %q, want %q", dev.CharDevPath(), charDevicePathForID(7))
+	}
+	if dev.Info().QueueDepth != defaultQueueDepth {
+		t.Fatalf("Info queue depth = %d, want %d", dev.Info().QueueDepth, defaultQueueDepth)
+	}
+}
+
+func TestNewDeviceWithHooksZeroCopyFlags(t *testing.T) {
+	var capturedFlags uint64
+	_, err := newDeviceWithHooks(DeviceOptions{Flags: FlagSupportZeroCopy | FlagUserCopy}, &deviceHooks{
+		createControlResources: func() (*os.File, *ioURing, error) {
+			return tempCharFile(t), nil, nil
+		},
+		addControlDevice: func(_ *Device, info *DevInfo) error {
+			capturedFlags = info.Flags
+			info.DevID = 8
+			return nil
+		},
+		openCharDevice: func(*Device, string) (*os.File, error) {
+			return tempCharFile(t), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("newDeviceWithHooks: %v", err)
+	}
+	if capturedFlags&FlagSupportZeroCopy == 0 || capturedFlags&FlagAutoBufReg == 0 || capturedFlags&FlagCmdIoctlEncode == 0 {
+		t.Fatalf("flags = %#x, want zero-copy + auto-buf-reg + ioctl-encode", capturedFlags)
+	}
+	if capturedFlags&FlagUserCopy != 0 {
+		t.Fatalf("flags = %#x, want user-copy cleared", capturedFlags)
+	}
+}
+
+func TestNewDeviceWithHooksCharRetry(t *testing.T) {
+	const successfulAttempt = 3 // Third attempt proves we retry and sleep between failures.
+
+	attempts := 0
+	sleeps := 0
+	_, err := newDeviceWithHooks(DeviceOptions{}, &deviceHooks{
+		createControlResources: func() (*os.File, *ioURing, error) {
+			return tempCharFile(t), nil, nil
+		},
+		addControlDevice: func(_ *Device, info *DevInfo) error {
+			info.DevID = 9
+			return nil
+		},
+		openCharDevice: func(*Device, string) (*os.File, error) {
+			attempts++
+			if attempts < successfulAttempt {
+				return nil, errors.New("not yet")
+			}
+			return tempCharFile(t), nil
+		},
+		sleep: func(time.Duration) {
+			sleeps++
+		},
+	})
+	if err != nil {
+		t.Fatalf("newDeviceWithHooks: %v", err)
+	}
+	if attempts != successfulAttempt {
+		t.Fatalf("attempts = %d, want %d", attempts, successfulAttempt)
+	}
+	if sleeps != successfulAttempt-1 {
+		t.Fatalf("sleeps = %d, want %d", sleeps, successfulAttempt-1)
+	}
+}
+
+func TestNewDeviceWithHooksOpenCharFailureCleanup(t *testing.T) {
+	deleteCalls := 0
+	closeRingCalls := 0
+	closeFileCalls := 0
+	attempts := 0
+	wantErr := errors.New("char open boom")
+
+	_, err := newDeviceWithHooks(DeviceOptions{}, &deviceHooks{
+		createControlResources: func() (*os.File, *ioURing, error) {
+			return tempCharFile(t), nil, nil
+		},
+		addControlDevice: func(_ *Device, info *DevInfo) error {
+			info.DevID = 10
+			return nil
+		},
+		openCharDevice: func(*Device, string) (*os.File, error) {
+			attempts++
+			return nil, wantErr
+		},
+		sleep: func(time.Duration) {},
+		deleteControl: func(*Device) error {
+			deleteCalls++
+			return nil
+		},
+		closeCtrlRing: func(*Device) error {
+			closeRingCalls++
+			return nil
+		},
+		closeCtrlFile: func(*Device) error {
+			closeFileCalls++
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), wantErr.Error()) {
+		t.Fatalf("error = %v, want char open failure", err)
+	}
+	if attempts != charDevicePollAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, charDevicePollAttempts)
+	}
+	if deleteCalls != 1 || closeRingCalls != 1 || closeFileCalls != 1 {
+		t.Fatalf("cleanup calls = delete:%d ring:%d file:%d, want 1 each", deleteCalls, closeRingCalls, closeFileCalls)
+	}
+}
+
+func TestSetParamsUsesControlHook(t *testing.T) {
+	var got Params
+	dev := newHookedDevice(1, &deviceHooks{
+		setParams: func(_ *Device, params *Params) error {
+			got = *params
+			return nil
+		},
+	})
+
+	params := &Params{}
+	if err := dev.SetParams(params); err != nil {
+		t.Fatalf("SetParams: %v", err)
+	}
+	wantLen := uint32(unsafe.Sizeof(*params))
+	if got.Len != wantLen {
+		t.Fatalf("Len = %d, want %d", got.Len, wantLen)
+	}
+}
+
+func TestGetParamsUsesControlHook(t *testing.T) {
+	var captured Params
+	dev := newHookedDevice(1, &deviceHooks{
+		getParams: func(_ *Device, params *Params) error {
+			captured = *params
+			params.Basic.DevSectors = 123
+			return nil
+		},
+	})
+
+	params, err := dev.GetParams()
+	if err != nil {
+		t.Fatalf("GetParams: %v", err)
+	}
+	wantLen := uint32(unsafe.Sizeof(Params{}))
+	if captured.Len != wantLen {
+		t.Fatalf("Len = %d, want %d", captured.Len, wantLen)
+	}
+	if captured.Types != ParamTypeAll {
+		t.Fatalf("Types = %#x, want %#x", captured.Types, ParamTypeAll)
+	}
+	if params.Basic.DevSectors != 123 {
+		t.Fatalf("DevSectors = %d, want 123", params.Basic.DevSectors)
+	}
+}
+
+func TestServeUsesPreparedUserQueue(t *testing.T) {
+	cmdBuf := make([]byte, ioDescSize)
+	encodeIODesc(cmdBuf, testTagZero, ioDesc{OpFlags: uint32(OpRead), NrSectors: testSectorCount})
+
+	startCalls := 0
+	affinityCalls := 0
+	releaseCalls := 0
+	handled := 0
+	dev := newServeTestDevice(t, 0, &deviceHooks{
+		startControl: func(*Device) error {
+			startCalls++
+			return nil
+		},
+		applyQueueAffinity: func(*Device, uint16) {
+			affinityCalls++
+		},
+		prepareUserQueue: func(*Device, uint16) (*preparedUserQueue, error) {
+			return &preparedUserQueue{
+				ring:   newReadyThenStopRing(),
+				cmdBuf: cmdBuf,
+				release: func() {
+					releaseCalls++
+				},
+			}, nil
+		},
+	})
+
+	err := dev.Serve(HandlerFunc(func(*Request) error {
+		handled++
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	if startCalls != 1 || affinityCalls != 1 || releaseCalls != 1 || handled != 1 {
+		t.Fatalf("counts = start:%d affinity:%d release:%d handled:%d, want 1 each", startCalls, affinityCalls, releaseCalls, handled)
+	}
+}
+
+func TestServeZeroCopyUsesPreparedQueue(t *testing.T) {
+	cmdBuf := make([]byte, ioDescSize)
+	encodeIODesc(cmdBuf, testTagZero, ioDesc{OpFlags: uint32(OpRead), NrSectors: testSectorCount})
+
+	startCalls := 0
+	releaseCalls := 0
+	handled := 0
+	dev := newServeTestDevice(t, FlagSupportZeroCopy, &deviceHooks{
+		startControl: func(*Device) error {
+			startCalls++
+			return nil
+		},
+		applyQueueAffinity: func(*Device, uint16) {},
+		prepareZeroCopyQueue: func(*Device, uint16) (*preparedZeroCopyQueue, error) {
+			return &preparedZeroCopyQueue{
+				ring:   newReadyThenStopRing(),
+				cmdBuf: cmdBuf,
+				charFD: testControlFD,
+				release: func() {
+					releaseCalls++
+				},
+			}, nil
+		},
+	})
+
+	err := dev.ServeZeroCopy(ZeroCopyHandlerFunc(func(*ZeroCopyRequest) error {
+		handled++
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("ServeZeroCopy: %v", err)
+	}
+	if startCalls != 1 || releaseCalls != 1 || handled != 1 {
+		t.Fatalf("counts = start:%d release:%d handled:%d, want 1 each", startCalls, releaseCalls, handled)
+	}
+}
+
+func TestServeZeroCopyRejectsMissingFlag(t *testing.T) {
+	dev := newServeTestDevice(t, 0, nil)
+	err := dev.ServeZeroCopy(ZeroCopyHandlerFunc(func(*ZeroCopyRequest) error { return nil }))
+	if err == nil || !strings.Contains(err.Error(), "FlagSupportZeroCopy") {
+		t.Fatalf("error = %v, want zero-copy flag rejection", err)
 	}
 }
