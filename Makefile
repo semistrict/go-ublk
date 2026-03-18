@@ -1,4 +1,4 @@
-.PHONY: build test check fmt
+.PHONY: build test check coverage fmt
 
 .DEFAULT_GOAL := build
 
@@ -11,6 +11,11 @@ build:
 
 test:
 	$(GO) test -timeout 20s -run '$(UNIT_TEST_RUN)' ./...
+
+coverage:
+	mkdir -p .tmp/coverage
+	$(GO) test -coverprofile=.tmp/coverage/unit.cover.out -run '$(UNIT_TEST_RUN)' ./...
+	$(GO) tool cover -func=.tmp/coverage/unit.cover.out
 
 check:
 	@fmt_out="$$(gofmt -l $(GO_FILES))"; \

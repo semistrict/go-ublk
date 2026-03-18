@@ -37,7 +37,8 @@ import (
 )
 
 const (
-	controlDevPath = "/dev/ublk-control"
+	controlDevPath     = "/dev/ublk-control"
+	devicePollInterval = 10 * time.Millisecond // wait between device-path retries
 )
 
 // Device represents a ublk device.
@@ -289,7 +290,7 @@ func NewDevice(opts DeviceOptions) (*Device, error) {
 		if err == nil {
 			break
 		}
-		_ = syscall.Nanosleep(&syscall.Timespec{Nsec: 10_000_000}, nil) // 10ms
+		time.Sleep(devicePollInterval)
 	}
 	if dev.charFile == nil {
 		_ = dev.ctrlDelDev()
@@ -512,7 +513,7 @@ func (d *Device) serveQueue(qid uint16, h Handler, ready chan<- error) error {
 		cmdBufOffset,
 		int(cmdBufSize),
 		syscall.PROT_READ,
-		syscall.MAP_SHARED|syscall.MAP_POPULATE,
+		syscall.MAP_SHARED|mmapPopulateFlag,
 	)
 	if err != nil {
 		ready <- fmt.Errorf("mmap cmd buf: %w", err)

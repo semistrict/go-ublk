@@ -157,7 +157,7 @@ func (d *Device) serveQueueZeroCopy(qid uint16, h ZeroCopyHandler, ready chan<- 
 		cmdBufOffset,
 		int(cmdBufSize),
 		syscall.PROT_READ,
-		syscall.MAP_SHARED|syscall.MAP_POPULATE,
+		syscall.MAP_SHARED|mmapPopulateFlag,
 	)
 	if err != nil {
 		ready <- fmt.Errorf("mmap cmd buf: %w", err)

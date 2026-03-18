@@ -13,6 +13,8 @@ import (
 	"github.com/semistrict/go-ublk"
 )
 
+const readyPollInterval = 10 * time.Millisecond // wait between block-device readiness checks
+
 func main() {
 	var (
 		queues       = flag.Uint("queues", 1, "number of hardware queues")
@@ -157,8 +159,7 @@ func waitForDevice(dev *ublk.Device) error {
 		if err := ensureBlockNode(dev); err != nil {
 			return err
 		}
-		ts := syscall.Timespec{Nsec: 10_000_000}
-		_ = syscall.Nanosleep(&ts, nil)
+		time.Sleep(readyPollInterval)
 	}
 	return fmt.Errorf("timed out")
 }

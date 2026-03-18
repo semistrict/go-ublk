@@ -228,7 +228,7 @@ func newIOURing(entries uint32, sqe128 bool) (*ioURing, error) {
 }
 
 func mmapShared(fd int, offset int64, length int) ([]byte, error) {
-	return syscall.Mmap(fd, offset, length, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED|syscall.MAP_POPULATE)
+	return syscall.Mmap(fd, offset, length, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED|mmapPopulateFlag)
 }
 
 func (r *ioURing) mmapRings(p *ioURingParams) error {

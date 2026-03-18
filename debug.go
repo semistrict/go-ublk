@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"syscall"
 )
 
 var (
@@ -32,7 +31,7 @@ func ioDebugf(format string, args ...any) {
 	if !ioDebugEnabled() {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "go-ublk debug tid=%d "+format+"\n", append([]any{syscall.Gettid()}, args...)...)
+	fmt.Fprintf(os.Stderr, "go-ublk debug tid=%d "+format+"\n", append([]any{currentThreadID()}, args...)...)
 }
 
 func ioDebugVerifyDescEnabled() bool {
