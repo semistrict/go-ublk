@@ -67,6 +67,14 @@ func submitCtrlCmdNoWait(r submitControlRing, fd int32, cmdOp uint32, cmd *ctrlC
 	return r.Submit()
 }
 
+func requestErrorResult(err error) int32 {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return -int32(errno)
+	}
+	return -int32(syscall.EIO)
+}
+
 func (d *Device) activeUserCopyTarget() userCopyReadWriter {
 	if d.userCopyData != nil {
 		return d.userCopyData
@@ -235,7 +243,7 @@ func (d *Device) runUserQueueLoop(r queueRing, qid uint16, loadDesc ioDescLoader
 					if debugEnabled {
 						ioDebugf("handle error q=%d tag=%d err=%v", qid, tag, err)
 					}
-					result = -int32(syscall.EIO)
+					result = requestErrorResult(err)
 				}
 
 				if debugEnabled {
@@ -380,7 +388,7 @@ func (d *Device) runZeroCopyQueueLoop(r queueRing, qid uint16, charFd int32, loa
 
 				result := int32(req.NrSectors) * 512
 				if err := h.HandleIO(req); err != nil {
-					result = -int32(syscall.EIO)
+					result = requestErrorResult(err)
 				}
 
 				if err := d.submitCommitAndFetchAutoBuf(r, qid, tag, result); err != nil {

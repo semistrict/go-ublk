@@ -124,6 +124,64 @@ func ExampleNewDevice_ramdisk() {
 	}
 }
 
+// ExampleNewReaderAtHandler_fileBacked demonstrates exposing an *os.File as a
+// block device through the easy ReaderAt/WriterAt adapter.
+func ExampleNewReaderAtHandler_fileBacked() {
+	// Create a temporary backing file.
+	f, err := os.CreateTemp("", "ublk-readerat-*")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+
+	const sectors = 2048 // 1 MiB backing file
+	if err := f.Truncate(sectors * 512); err != nil {
+		fmt.Println("error:", err)
+		_ = f.Close()
+		return
+	}
+
+	handler := ublk.NewReaderAtHandler(f, ublk.ReaderAtHandlerOptions{})
+	defer func() { _ = handler.Close() }()
+
+	dev, err := ublk.NewDevice(ublk.DeviceOptions{
+		Queues:     1,
+		QueueDepth: 64,
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	defer func() { _ = dev.Delete() }()
+
+	err = dev.SetParams(&ublk.Params{
+		Types: ublk.ParamTypeBasic,
+		Basic: ublk.ParamBasic{
+			LogicalBSShift:  9,
+			PhysicalBSShift: 12,
+			IOOptShift:      12,
+			IOMinShift:      9,
+			MaxSectors:      1024,
+			DevSectors:      sectors,
+		},
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	go func() {
+		_ = dev.Serve(handler)
+	}()
+
+	fmt.Printf("file-backed device %d at %s using %s\n", dev.ID(), dev.BlockDevPath(), f.Name())
+	if err := dev.Stop(); err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+}
+
 // ExampleNewDevice_zeroCopyLoop demonstrates creating a file-backed loop
 // device using zero-copy IO.
 func ExampleNewDevice_zeroCopyLoop() {

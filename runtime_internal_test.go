@@ -442,6 +442,32 @@ func TestQueueUserLoopHandlerErrorMapsToEIO(t *testing.T) {
 	}
 }
 
+func TestQueueUserLoopHandlerErrnoPreserved(t *testing.T) {
+	dev := newTestDevice(t, 1)
+	cmdBuf := make([]byte, ioDescSize)
+	encodeIODesc(cmdBuf, testTagZero, ioDesc{OpFlags: uint32(OpWrite), NrSectors: testSectorCount})
+	ring := &fakeQueueRing{
+		cqes: []*ioURingCQE{
+			{UserData: uint64(testTagZero), Res: 0},
+			{UserData: uint64(testTagZero), Res: -int32(syscall.ENODEV)},
+		},
+	}
+
+	err := dev.runUserQueueLoop(ring, testQueueID, func(tag uint16) ioDesc {
+		return loadIODesc(cmdBuf, tag)
+	}, nil, HandlerFunc(func(*Request) error {
+		return syscall.EROFS
+	}))
+	if err != nil {
+		t.Fatalf("runUserQueueLoop: %v", err)
+	}
+
+	cmd := decodeIOCmd(ring.submitted[0][0])
+	if cmd.Result != -int32(syscall.EROFS) {
+		t.Fatalf("commit result = %d, want %d", cmd.Result, -int32(syscall.EROFS))
+	}
+}
+
 func TestQueueUserLoopBatchesReadyCQEs(t *testing.T) {
 	dev := newTestDevice(t, 2)
 	cmdBuf := make([]byte, 2*ioDescSize)
