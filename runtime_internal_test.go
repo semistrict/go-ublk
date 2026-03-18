@@ -291,6 +291,43 @@ func TestCtrlSubmitAndWaitErrors(t *testing.T) {
 	})
 }
 
+func TestCtrlSubmitNoWait(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		ring := &fakeQueueRing{}
+		cmd := &ctrlCmd{DevID: 456, QueueID: testQueueID}
+
+		if err := submitCtrlCmdNoWait(ring, testControlFD, ublkUCmdStopDev, cmd); err != nil {
+			t.Fatalf("submitCtrlCmdNoWait: %v", err)
+		}
+		if ring.submitCalls != 1 {
+			t.Fatalf("submit calls = %d, want 1", ring.submitCalls)
+		}
+		if len(ring.submitted) != 1 || len(ring.submitted[0]) != 1 {
+			t.Fatalf("submitted batches = %d/%d, want 1 batch with 1 SQE", len(ring.submitted), len(ring.submitted[0]))
+		}
+
+		sqe := ring.submitted[0][0]
+		if got := sqeU64(sqe, sqeOffOff); got != uint64(ublkUCmdStopDev) {
+			t.Fatalf("SQE off/cmd = %#x, want %#x", got, uint64(ublkUCmdStopDev))
+		}
+	})
+
+	t.Run("no sqe", func(t *testing.T) {
+		err := submitCtrlCmdNoWait(&fakeQueueRing{noSQE: true}, testControlFD, ublkUCmdStopDev, &ctrlCmd{})
+		if err == nil || !strings.Contains(err.Error(), "no SQE") {
+			t.Fatalf("error = %v, want no SQE", err)
+		}
+	})
+
+	t.Run("submit", func(t *testing.T) {
+		want := errors.New("submit boom")
+		err := submitCtrlCmdNoWait(&fakeQueueRing{submitErr: want}, testControlFD, ublkUCmdStopDev, &ctrlCmd{})
+		if !errors.Is(err, want) {
+			t.Fatalf("error = %v, want %v", err, want)
+		}
+	})
+}
+
 func TestQueueInitialFetches(t *testing.T) {
 	dev := newTestDevice(t, 2)
 	ring := &fakeQueueRing{}

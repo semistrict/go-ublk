@@ -83,14 +83,7 @@ func (d *Device) ctrlStopDev() error {
 		DevID:   uint32(d.id),
 		QueueID: ^uint16(0),
 	}
-	cmdOp := d.ctrlOp(ublkUCmdStopDev, CmdStopDev)
-	sqe := d.ctrlRing.GetSQE()
-	if sqe == nil {
-		return fmt.Errorf("no SQE available")
-	}
-	prepCtrlCmd(sqe, cmdOp, int32(d.ctrlFile.Fd()), &cmd)
-	sqeSetU64(sqe, sqeOffUserData, 1)
-	return d.ctrlRing.Submit()
+	return submitCtrlCmdNoWait(d.ctrlRing, int32(d.ctrlFile.Fd()), d.ctrlOp(ublkUCmdStopDev, CmdStopDev), &cmd)
 }
 
 // ctrlStopDevWait waits for the STOP_DEV CQE. Call after serve goroutines exit.

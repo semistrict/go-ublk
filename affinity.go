@@ -19,8 +19,12 @@ type QueueAffinity struct {
 
 // CPUs returns the list of CPU indices in this affinity mask.
 func (a *QueueAffinity) CPUs() []int {
+	return queueAffinityCPUs(a.mask)
+}
+
+func queueAffinityCPUs(mask []byte) []int {
 	var cpus []int
-	for i, b := range a.mask {
+	for i, b := range mask {
 		for bit := 0; bit < 8; bit++ {
 			if b&(1<<uint(bit)) != 0 {
 				cpus = append(cpus, i*8+bit)
@@ -28,6 +32,15 @@ func (a *QueueAffinity) CPUs() []int {
 		}
 	}
 	return cpus
+}
+
+func newGetQueueAffinityCmd(deviceID int32, qid uint16, buf []byte) ctrlCmd {
+	return ctrlCmd{
+		DevID:   uint32(deviceID),
+		QueueID: qid,
+		Addr:    uint64(uintptr(unsafe.Pointer(&buf[0]))),
+		Len:     uint16(len(buf)),
+	}
 }
 
 // GetQueueAffinity retrieves the CPU affinity for the given queue.
@@ -38,12 +51,7 @@ func (d *Device) GetQueueAffinity(qid uint16) (*QueueAffinity, error) {
 	pinner.Pin(&buf[0])
 	defer pinner.Unpin()
 
-	cmd := ctrlCmd{
-		DevID:   uint32(d.id),
-		QueueID: qid,
-		Addr:    uint64(uintptr(unsafe.Pointer(&buf[0]))),
-		Len:     uint16(len(buf)),
-	}
+	cmd := newGetQueueAffinityCmd(d.id, qid, buf)
 
 	cmdOp := d.ctrlOp(ublkUCmdGetQueueAffinity, CmdGetQueueAffinity)
 	if err := d.ctrlCmdWithPayload(cmdOp, &cmd); err != nil {

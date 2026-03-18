@@ -13,6 +13,11 @@ type controlRing interface {
 	SeenCQE(*ioURingCQE)
 }
 
+type submitControlRing interface {
+	GetSQE() *ioURingSQE
+	Submit() error
+}
+
 type queueRing interface {
 	GetSQE() *ioURingSQE
 	Submit() error
@@ -50,6 +55,16 @@ func submitCtrlCmdAndWait(r controlRing, fd int32, cmdOp uint32, cmd *ctrlCmd) (
 	res := cqe.Res
 	r.SeenCQE(cqe)
 	return res, nil
+}
+
+func submitCtrlCmdNoWait(r submitControlRing, fd int32, cmdOp uint32, cmd *ctrlCmd) error {
+	sqe := r.GetSQE()
+	if sqe == nil {
+		return fmt.Errorf("no SQE available")
+	}
+	prepCtrlCmd(sqe, cmdOp, fd, cmd)
+	sqeSetU64(sqe, sqeOffUserData, 1)
+	return r.Submit()
 }
 
 func (d *Device) activeUserCopyTarget() userCopyReadWriter {

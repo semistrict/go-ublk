@@ -21,6 +21,19 @@ scripts/lima-bench-suite.sh
 
 Artifacts land under `.tmp/bench-suite/latest/`.
 
+Run the host-native synthetic queue benchmarks:
+
+```sh
+scripts/run-sim-bench.sh
+```
+
+Useful knobs:
+
+```sh
+scripts/run-sim-bench.sh --count 5 --benchtime 2s
+scripts/run-sim-bench.sh --out-dir /Users/ramon/src/go-ublk/.tmp/sim-bench-long
+```
+
 Write-side perf/profile flow:
 
 ```sh

@@ -53,6 +53,7 @@ type Device struct {
 	ctrlRing  *ioURing // io_uring for control commands
 	ioRings   []*ioURing
 	ioRingsMu sync.Mutex
+	hooks     *deviceHooks
 
 	// legacyCmds is true when the kernel doesn't support ioctl-encoded
 	// commands (UBLK_F_CMD_IOCTL_ENCODE). Detected at device creation.
@@ -377,7 +378,7 @@ func (d *Device) serve(nQueues int, queueFn func(uint16, chan<- error) error) er
 	}
 
 	// All queues have submitted FETCHes. Now start the device.
-	if err := d.ctrlStartDev(); err != nil {
+	if err := d.startControl(); err != nil {
 		_ = d.Stop()
 		d.serveWg.Wait()
 		return fmt.Errorf("start device: %w", err)
@@ -402,7 +403,7 @@ func (d *Device) Stop() error {
 	default:
 	}
 	close(d.stopped)
-	return d.ctrlStopDev()
+	return d.stopControl()
 }
 
 func (d *Device) isStopped() bool {
@@ -453,32 +454,19 @@ func (d *Device) delete() error {
 
 	// Let STOP_DEV abort pending IO so queue goroutines can exit cleanly.
 	// Only interrupt the rings if shutdown gets stuck.
-	if !d.waitServe(2 * time.Second) {
-		d.ioRingsMu.Lock()
-		for _, ring := range d.ioRings {
-			if ring != nil {
-				ring.Interrupt()
-			}
-		}
-		d.ioRingsMu.Unlock()
-		d.waitServe(0)
+	if !d.waitServeWithTimeout(queueShutdownGracePeriod) {
+		d.interruptQueueRings()
+		d.waitServeWithTimeout(0)
 	}
 
 	// Close the char device before deleting (kernel requires no open refs).
-	if d.charFile != nil {
-		err = errors.Join(err, d.charFile.Close())
-		d.charFile = nil
-	}
+	err = errors.Join(err, d.closeCharDevice())
 
 	// Drain STOP_DEV CQE, then delete.
-	err = errors.Join(err, d.ctrlStopDevWait())
-	err = errors.Join(err, d.ctrlDelDev())
-	if d.ctrlRing != nil {
-		err = errors.Join(err, d.ctrlRing.Close())
-	}
-	if d.ctrlFile != nil {
-		err = errors.Join(err, d.ctrlFile.Close())
-	}
+	err = errors.Join(err, d.stopControlWait())
+	err = errors.Join(err, d.deleteControl())
+	err = errors.Join(err, d.closeControlRing())
+	err = errors.Join(err, d.closeControlFile())
 	return err
 }
 
@@ -493,7 +481,7 @@ func (d *Device) serveQueue(qid uint16, h Handler, ready chan<- error) error {
 	defer runtime.UnlockOSThread()
 	ioDebugf("serveQueue start q=%d depth=%d", qid, d.info.QueueDepth)
 
-	d.setQueueAffinity(qid)
+	d.applyQueueAffinity(qid)
 
 	depth := int(d.info.QueueDepth)
 
